@@ -414,7 +414,9 @@
                 autocomplete="off"/>
               <div id="pAddSymbolDropdown" class="ticker-dropdown" style="display:none;"></div>
               <input id="pAddShares" type="number" min="0.001" step="any" placeholder="Shares"
-                style="background:var(--bg); border:1px solid var(--border2); color:var(--text); font-family:var(--mono); font-size:12px; padding:7px 10px; border-radius:var(--r-sm); outline:none; width:80px;"
+                style="background:var(--bg); border:1px solid var(--border2); color:var(--text); font-family:var(--mono); font-size:12px; padding:7px 10px; border-radius:var(--r-sm); outline:none; width:80px;"/>
+              <input id="pAddDate" type="date" title="Buy date (leave blank for today)"
+                style="background:var(--bg); border:1px solid var(--border2); color:var(--text); font-family:var(--mono); font-size:12px; padding:7px 10px; border-radius:var(--r-sm); outline:none; width:140px;"
                 onkeydown="if(event.key==='Enter') addPositionManual()"/>
               <button class="btn btn-primary btn-sm" onclick="addPositionManual()">Add</button>
             </div>
@@ -452,7 +454,7 @@
                 <th>Current</th>
                 <th>P&amp;L</th>
                 <th>Signal</th>
-                <th>Added</th>
+                <th>Buy Date</th>
                 <th>Actions</th>
               </tr>
             </thead>

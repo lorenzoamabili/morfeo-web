@@ -445,25 +445,48 @@ function renderWeightBars(containerId, weights) {
 async function addPositionManual() {
   const symbolInput = document.getElementById('pAddSymbol');
   const sharesInput = document.getElementById('pAddShares');
+  const dateInput   = document.getElementById('pAddDate');
   const sym    = symbolInput.value.trim().toUpperCase();
   const shares = parseFloat(sharesInput.value);
+  const buyDate = dateInput?.value || null; // null = no date specified
 
   if (!sym)              { showToast('Enter a ticker symbol', 'error'); return; }
   if (!shares || shares <= 0) { showToast('Enter a valid number of shares', 'error'); return; }
 
   showToast(`Adding ${sym}…`);
 
-  // Fetch current price via backend proxy
+  // Fetch current price — quote API first, OHLCV last-close as fallback
   let buyPrice = null;
   let name = sym;
+
   try {
     const r = await fetch(`/api/quote?symbol=${encodeURIComponent(sym)}`);
     if (r.ok) {
       const json = await r.json();
       const q = json?.quoteResponse?.result?.[0];
-      if (q) { buyPrice = q.regularMarketPrice; name = q.longName || q.shortName || sym; }
+      if (q) {
+        // regularMarketPrice is null when market is closed; use previous close
+        buyPrice = q.regularMarketPrice || q.regularMarketPreviousClose || q.ask || null;
+        name = q.longName || q.shortName || sym;
+      }
     }
   } catch (e) { }
+
+  // Secondary fallback: last close from OHLCV
+  if (!buyPrice) {
+    try {
+      const now   = Math.floor(Date.now() / 1000);
+      const start = now - 7 * 24 * 3600;
+      const r = await fetch(`/api/ohlcv?symbol=${encodeURIComponent(sym)}&period1=${start}&period2=${now}&interval=1d`);
+      if (r.ok) {
+        const json = await r.json();
+        const closes = json?.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
+        if (closes) buyPrice = [...closes].reverse().find(v => v != null) ?? null;
+        const meta = json?.chart?.result?.[0]?.meta;
+        if (meta) name = meta.longName || meta.shortName || sym;
+      }
+    } catch (e) { }
+  }
 
   if (!buyPrice) {
     showToast(`Could not fetch price for ${sym} — check the symbol`, 'error');
@@ -472,7 +495,7 @@ async function addPositionManual() {
 
   const portfolio = loadPortfolio();
   const idx = portfolio.findIndex(p => p.symbol === sym);
-  const entry = { symbol: sym, name, shares, buyPrice, addedAt: Date.now(), currentPrice: buyPrice, lastSignal: null, lastUpdated: Date.now() };
+  const entry = { symbol: sym, name, shares, buyPrice, buyDate: buyDate || null, addedAt: Date.now(), currentPrice: buyPrice, lastSignal: null, lastUpdated: Date.now() };
   if (idx >= 0) portfolio[idx] = { ...portfolio[idx], ...entry };
   else portfolio.push(entry);
   savePortfolio(portfolio);
@@ -480,6 +503,7 @@ async function addPositionManual() {
   state.portfolio = loadPortfolio();
   symbolInput.value = '';
   sharesInput.value = '';
+  if (dateInput) dateInput.value = '';
   _hideDropdown(document.getElementById('pAddSymbolDropdown'));
   renderPortfolioView();
   renderDashboard();
@@ -587,7 +611,7 @@ function renderPortfolioView() {
           ${pnlPct != null ? fmtPct(pnlPct) + '<br><span style="font-size:10px;opacity:.7;">' + (pnl >= 0 ? '+' : '') + fmtCurrency(pnl) + '</span>' : '—'}
         </td>
         <td>${p.lastSignal ? `<span class="badge ${signalBadgeClass(p.lastSignal)}">${p.lastSignal}</span>` : '—'}</td>
-        <td class="text-xs text-muted">${p.addedAt ? timeAgo(p.addedAt) : '—'}</td>
+        <td class="text-xs text-muted">${p.buyDate ? fmtDate(p.buyDate) : (p.addedAt ? timeAgo(p.addedAt) : '—')}</td>
         <td>
           <div class="flex gap-8">
             <button class="btn btn-ghost btn-xs" onclick="refreshPosition('${p.symbol}')" title="Update price">↻</button>

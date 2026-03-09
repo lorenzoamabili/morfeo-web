@@ -21,13 +21,12 @@
 //        }
 // ═══════════════════════════════════════════════════════════════
 
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
+const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBaQF1pQ8q1yK28UFk7Q5VgaGCDezgdco0",
   authDomain: "morfeo-webapp.firebaseapp.com",
   projectId: "morfeo-webapp",
   storageBucket: "morfeo-webapp.firebasestorage.app",
   messagingSenderId: "291801972074",
   appId: "1:291801972074:web:ca0ffa02321056d71f7913",
-  measurementId: "G-SY41330HXC"
+  measurementId: "G-SY41330HXC",
 };
