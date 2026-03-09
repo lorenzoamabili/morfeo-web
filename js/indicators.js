@@ -139,9 +139,11 @@ async function fetchFundamentals(symbol) {
       marketCap: q.marketCap ? fmtMarketCap(q.marketCap) : 'N/A',
       beta: q.beta ? q.beta.toFixed(2) : 'N/A',
       dividendYield: q.dividendYield ? (q.dividendYield * 100).toFixed(2) + '%' : 'N/A',
+      dividendYieldRaw: q.dividendYield ? q.dividendYield * 100 : 0,
       fiftyTwoHigh: q.fiftyTwoWeekHigh ? q.fiftyTwoWeekHigh.toFixed(2) : 'N/A',
       fiftyTwoLow: q.fiftyTwoWeekLow ? q.fiftyTwoWeekLow.toFixed(2) : 'N/A',
       avgVolume: q.averageDailyVolume10Day ? fmtVol(q.averageDailyVolume10Day) : 'N/A',
+      sector: q.sector || null,
     };
   } catch (e) { return null; }
 }

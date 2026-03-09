@@ -333,6 +333,59 @@ function renderCorrelationHeatmap(containerId, symbols, matrix) {
   }, PLOTLY_CONFIG);
 }
 
+// ── Portfolio value history chart ─────────────────────────────────
+
+function renderPortfolioValueChart(containerId, snapshots) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!snapshots || snapshots.length < 2) {
+    el.innerHTML = '<div style="text-align:center;padding:32px 20px;color:var(--muted);font-size:11px;">No history yet — refresh positions to start recording daily values.</div>';
+    return;
+  }
+  const dates  = snapshots.map(s => s.date);
+  const values = snapshots.map(s => s.value);
+  const first  = values[0], last = values[values.length - 1];
+  const color     = last >= first ? CHART_THEME.green : CHART_THEME.red;
+  const fillColor = last >= first ? 'rgba(61,186,126,0.06)' : 'rgba(224,79,95,0.06)';
+
+  Plotly.newPlot(containerId, [{
+    x: dates, y: values,
+    type: 'scatter', mode: 'lines',
+    name: 'Portfolio Value',
+    line: { color, width: 2 },
+    fill: 'tozeroy', fillcolor: fillColor,
+    hovertemplate: '%{x}: $%{y:,.0f}<extra></extra>',
+  }], {
+    ...BASE_LAYOUT,
+    height: 200,
+    margin: { ...BASE_LAYOUT.margin, t: 10 },
+    yaxis: { ...BASE_LAYOUT.yaxis, tickprefix: '$', tickformat: ',.0f' },
+    showlegend: false,
+  }, PLOTLY_CONFIG);
+}
+
+// ── Sector breakdown pie chart ────────────────────────────────────
+
+function renderSectorPie(containerId, labels, values) {
+  const SECTOR_COLORS = [
+    CHART_THEME.gold, CHART_THEME.blue, CHART_THEME.green, CHART_THEME.orange,
+    CHART_THEME.red, '#a855f7', '#06b6d4', '#f59e0b', '#84cc16', '#ec4899',
+  ];
+  Plotly.newPlot(containerId, [{
+    type: 'pie', labels, values,
+    hole: 0.42,
+    textinfo: 'label+percent',
+    textfont: { color: CHART_THEME.text, size: 11 },
+    marker: { colors: SECTOR_COLORS, line: { color: CHART_THEME.paper, width: 2 } },
+    hovertemplate: '%{label}: %{value:.1f} (%{percent})<extra></extra>',
+  }], {
+    ...BASE_LAYOUT,
+    height: 220,
+    margin: { l: 20, r: 20, t: 20, b: 20 },
+    showlegend: false,
+  }, PLOTLY_CONFIG);
+}
+
 // ── Volatility / ATR chart ────────────────────────────────────────
 
 function renderVolatilityChart(containerId, dates, vol, atr, close) {

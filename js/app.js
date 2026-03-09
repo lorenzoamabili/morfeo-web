@@ -11,6 +11,7 @@ const state = {
   watchlist: [],
   settings: null,
   portfolioCache: {},     // symbol → { data, ind, net, result }
+  portfolioSort: { col: null, dir: 'asc' },
 };
 
 // ── Init ─────────────────────────────────────────────────────────
@@ -273,6 +274,8 @@ async function runAnalysis() {
   btn.disabled = true;
   hideAlert('aAlert');
   document.getElementById('aResults').style.display = 'none';
+  const consensusCard = document.getElementById('aConsensusCard');
+  if (consensusCard) consensusCard.style.display = 'none';
   setLoadingSteps('aLoading', true);
   setStep('aLoading', 1);
 
@@ -331,6 +334,9 @@ async function runAnalysis() {
 
     // ── Render results ──
     renderAnalysisResults(state.analysisResult, buyDate);
+
+    // ── Multi-timeframe consensus (runs in background, updates card when ready) ──
+    runConsensusAnalysis(data).then(renderConsensusResults);
 
   } catch (err) {
     setLoadingSteps('aLoading', false);
@@ -454,9 +460,11 @@ async function addPositionManual() {
 
   showToast(`Adding ${sym}…`);
 
-  // Fetch current price — quote API first, OHLCV last-close as fallback
+  // Fetch current price + metadata — quote API first, OHLCV last-close as fallback
   let buyPrice = null;
   let name = sym;
+  let sector = null;
+  let dividendYield = 0;
 
   try {
     const r = await fetch(`/api/quote?symbol=${encodeURIComponent(sym)}`);
@@ -464,9 +472,10 @@ async function addPositionManual() {
       const json = await r.json();
       const q = json?.quoteResponse?.result?.[0];
       if (q) {
-        // regularMarketPrice is null when market is closed; use previous close
         buyPrice = q.regularMarketPrice || q.regularMarketPreviousClose || q.ask || null;
         name = q.longName || q.shortName || sym;
+        sector = q.sector || null;
+        dividendYield = q.dividendYield ? q.dividendYield * 100 : 0;
       }
     }
   } catch (e) { }
@@ -494,9 +503,27 @@ async function addPositionManual() {
 
   const portfolio = loadPortfolio();
   const idx = portfolio.findIndex(p => p.symbol === sym);
-  const entry = { symbol: sym, name, shares, buyPrice, buyDate: buyDate || null, addedAt: Date.now(), currentPrice: buyPrice, lastSignal: null, lastUpdated: Date.now() };
-  if (idx >= 0) portfolio[idx] = { ...portfolio[idx], ...entry };
-  else portfolio.push(entry);
+  const entry = {
+    symbol: sym, name, shares, buyPrice, buyDate: buyDate || null,
+    addedAt: Date.now(), currentPrice: buyPrice, lastSignal: null,
+    lastUpdated: Date.now(), sector: sector || null, dividendYield,
+  };
+
+  let toastMsg;
+  if (idx >= 0) {
+    const ex = portfolio[idx];
+    const totalShares = Math.round((ex.shares + shares) * 1e8) / 1e8;
+    const avgPrice    = Math.round(((ex.shares * ex.buyPrice + shares * buyPrice) / totalShares) * 100) / 100;
+    portfolio[idx] = {
+      ...ex, shares: totalShares, buyPrice: avgPrice, currentPrice: buyPrice,
+      lastUpdated: Date.now(), sector: sector || ex.sector || null,
+      dividendYield: dividendYield || ex.dividendYield || 0,
+    };
+    toastMsg = `${sym} averaged — ${totalShares} shares @ avg ${fmtCurrency(avgPrice)}`;
+  } else {
+    portfolio.push(entry);
+    toastMsg = `${sym} added — ${shares} shares @ ${fmtCurrency(buyPrice)}`;
+  }
   savePortfolio(portfolio);
 
   state.portfolio = loadPortfolio();
@@ -507,7 +534,7 @@ async function addPositionManual() {
   renderPortfolioView();
   renderDashboard();
   updatePortfolioBadge();
-  showToast(`${sym} added — ${shares} shares @ ${fmtCurrency(buyPrice)}`);
+  showToast(toastMsg);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -575,6 +602,44 @@ function renderDashboard() {
 // PORTFOLIO VIEW
 // ══════════════════════════════════════════════════════════════════
 
+function setSortCol(col) {
+  if (state.portfolioSort.col === col) {
+    state.portfolioSort.dir = state.portfolioSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    state.portfolioSort.col = col;
+    state.portfolioSort.dir = 'asc';
+  }
+  renderPortfolioView();
+}
+
+function sortedPortfolio(portfolio) {
+  const { col, dir } = state.portfolioSort;
+  if (!col) return portfolio;
+  return [...portfolio].sort((a, b) => {
+    let va, vb;
+    switch (col) {
+      case 'symbol':       va = a.symbol; vb = b.symbol; break;
+      case 'shares':       va = a.shares; vb = b.shares; break;
+      case 'buyPrice':     va = a.buyPrice; vb = b.buyPrice; break;
+      case 'currentPrice': va = a.currentPrice || 0; vb = b.currentPrice || 0; break;
+      case 'pnlPct': {
+        const pa = positionPnL(a), pb = positionPnL(b);
+        va = pa.pnlPct ?? -Infinity; vb = pb.pnlPct ?? -Infinity; break;
+      }
+      case 'dividend': va = a.dividendYield || 0; vb = b.dividendYield || 0; break;
+      default: return 0;
+    }
+    if (typeof va === 'string') return dir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    return dir === 'asc' ? va - vb : vb - va;
+  });
+}
+
+function _sortArrow(col) {
+  const { col: sc, dir } = state.portfolioSort;
+  if (sc !== col) return '<span style="opacity:.25;">↕</span>';
+  return dir === 'asc' ? '↑' : '↓';
+}
+
 function renderPortfolioView() {
   state.portfolio = loadPortfolio();
   const summary  = portfolioSummary(state.portfolio);
@@ -587,18 +652,39 @@ function renderPortfolioView() {
   if (pnlPctEl) pnlPctEl.textContent = fmtPct(summary.totalPnLPct);
   document.getElementById('pPositionCount').textContent = summary.positions;
 
+  // ── Update sortable headers ───────────────────────────────────────
+  const thead = document.getElementById('pListHead');
+  if (thead) thead.innerHTML = `
+    <tr>
+      <th onclick="setSortCol('symbol')" style="cursor:pointer;">Symbol ${_sortArrow('symbol')}</th>
+      <th>Name</th>
+      <th onclick="setSortCol('shares')" style="cursor:pointer;">Shares ${_sortArrow('shares')}</th>
+      <th onclick="setSortCol('buyPrice')" style="cursor:pointer;">Buy Price ${_sortArrow('buyPrice')}</th>
+      <th onclick="setSortCol('currentPrice')" style="cursor:pointer;">Current ${_sortArrow('currentPrice')}</th>
+      <th onclick="setSortCol('pnlPct')" style="cursor:pointer;">P&amp;L ${_sortArrow('pnlPct')}</th>
+      <th>Signal</th>
+      <th onclick="setSortCol('dividend')" style="cursor:pointer;">Div. Yield ${_sortArrow('dividend')}</th>
+      <th>Buy Date</th>
+      <th>Actions</th>
+    </tr>`;
+
   const tbody = document.getElementById('pList');
   if (state.portfolio.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="9" class="empty-state" style="text-align:center;padding:40px;">
+    tbody.innerHTML = `<tr><td colspan="10" class="empty-state" style="text-align:center;padding:40px;">
       <div class="empty-icon">💼</div>
       <div class="empty-title">Portfolio is empty</div>
       <div>Enter a ticker and number of shares above, then click Add.</div>
     </td></tr>`;
+    // Still render charts with empty/snapshot data
+    _renderPortfolioCharts();
     return;
   }
 
-  tbody.innerHTML = state.portfolio.map(p => {
+  tbody.innerHTML = sortedPortfolio(state.portfolio).map(p => {
     const { pnl, pnlPct } = positionPnL(p);
+    const divYield = p.dividendYield > 0
+      ? `<span style="color:${p.dividendYield >= 2 ? 'var(--green)' : 'var(--text2)'};">${p.dividendYield.toFixed(2)}%</span>`
+      : '<span class="text-muted">—</span>';
     return `
       <tr>
         <td><span style="font-weight:500;">${p.symbol}</span></td>
@@ -610,6 +696,7 @@ function renderPortfolioView() {
           ${pnlPct != null ? fmtPct(pnlPct) + '<br><span style="font-size:10px;opacity:.7;">' + (pnl >= 0 ? '+' : '') + fmtCurrency(pnl) + '</span>' : '—'}
         </td>
         <td>${p.lastSignal ? `<span class="badge ${signalBadgeClass(p.lastSignal)}">${p.lastSignal}</span>` : '—'}</td>
+        <td class="text-xs">${divYield}</td>
         <td class="text-xs text-muted">${p.buyDate ? fmtDate(p.buyDate) : (p.addedAt ? timeAgo(p.addedAt) : '—')}</td>
         <td>
           <div class="flex gap-8">
@@ -620,6 +707,30 @@ function renderPortfolioView() {
         </td>
       </tr>`;
   }).join('');
+
+  _renderPortfolioCharts();
+}
+
+function _renderPortfolioCharts() {
+  // Portfolio value history
+  renderPortfolioValueChart('pPerfChart', loadSnapshots());
+
+  // Sector breakdown — only if at least one position has sector data
+  const withSector = state.portfolio.filter(p => p.sector);
+  const sectorCard = document.getElementById('pSectorCard');
+  if (sectorCard) {
+    if (withSector.length > 0) {
+      const sectorMap = {};
+      withSector.forEach(p => {
+        const s = p.sector;
+        sectorMap[s] = (sectorMap[s] || 0) + (p.currentPrice || p.buyPrice) * p.shares;
+      });
+      renderSectorPie('pSectorChart', Object.keys(sectorMap), Object.values(sectorMap));
+      sectorCard.style.display = 'block';
+    } else {
+      sectorCard.style.display = 'none';
+    }
+  }
 }
 
 async function refreshPosition(symbol) {
@@ -667,6 +778,9 @@ async function refreshAllPositions() {
     await refreshPosition(p.symbol);
     await new Promise(r => setTimeout(r, 300));
   }
+  // Save daily value snapshot
+  const summary = portfolioSummary(loadPortfolio());
+  if (summary.totalValue > 0) savePortfolioSnapshot(summary.totalValue);
   if (btn) btn.disabled = false;
   showToast('All positions updated');
 }
@@ -801,6 +915,7 @@ function clearAllData() {
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem(WATCHLIST_KEY);
   localStorage.removeItem(SETTINGS_KEY);
+  localStorage.removeItem(SNAPSHOTS_KEY);
   state.portfolio = [];
   state.watchlist = [];
   state.settings  = loadSettings();
@@ -915,6 +1030,188 @@ function exportPortfolioCSV() {
   showToast('Portfolio exported');
 }
 
+// ── CSV import ────────────────────────────────────────────────────
+// Expected columns: Symbol, Shares, Buy Price (optional), Buy Date (optional)
+
+async function importPortfolioCSV(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = '';
+  const text = await file.text();
+  const lines = text.trim().split('\n').filter(l => l.trim());
+  if (lines.length < 2) { showToast('CSV has no data rows', 'error'); return; }
+
+  // Detect header row (first cell non-numeric)
+  const startIdx = isNaN(parseFloat(lines[0].split(',')[0])) ? 1 : 0;
+  const dataLines = lines.slice(startIdx);
+
+  showToast(`Importing ${dataLines.length} rows…`);
+  let added = 0, failed = 0;
+
+  for (const line of dataLines) {
+    const cols = line.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
+    const sym    = cols[0]?.toUpperCase();
+    const shares = parseFloat(cols[1]);
+    if (!sym || !shares || shares <= 0) { failed++; continue; }
+
+    const buyPriceCSV = cols[2] ? parseFloat(cols[2]) : null;
+    const buyDateCSV  = cols[3] ? cols[3].trim() : null;
+
+    let buyPrice = buyPriceCSV;
+    let name = sym, sector = null, dividendYield = 0;
+
+    if (!buyPrice) {
+      try {
+        const r = await fetch(`/api/quote?symbol=${encodeURIComponent(sym)}`);
+        if (r.ok) {
+          const json = await r.json();
+          const q = json?.quoteResponse?.result?.[0];
+          if (q) {
+            buyPrice = q.regularMarketPrice || q.regularMarketPreviousClose || q.ask || null;
+            name = q.longName || q.shortName || sym;
+            sector = q.sector || null;
+            dividendYield = q.dividendYield ? q.dividendYield * 100 : 0;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!buyPrice) { failed++; continue; }
+
+    const portfolio = loadPortfolio();
+    const idx = portfolio.findIndex(p => p.symbol === sym);
+    const entry = {
+      symbol: sym, name, shares, buyPrice, buyDate: buyDateCSV || null,
+      addedAt: Date.now(), currentPrice: buyPrice, lastSignal: null,
+      lastUpdated: Date.now(), sector, dividendYield,
+    };
+    if (idx >= 0) {
+      const ex = portfolio[idx];
+      const totalShares = Math.round((ex.shares + shares) * 1e8) / 1e8;
+      const avgPrice    = Math.round(((ex.shares * ex.buyPrice + shares * buyPrice) / totalShares) * 100) / 100;
+      portfolio[idx] = { ...ex, shares: totalShares, buyPrice: avgPrice, currentPrice: buyPrice, lastUpdated: Date.now() };
+    } else {
+      portfolio.push(entry);
+    }
+    savePortfolio(portfolio);
+    added++;
+    await new Promise(r => setTimeout(r, 150)); // small delay to avoid rate-limiting
+  }
+
+  state.portfolio = loadPortfolio();
+  renderPortfolioView();
+  renderDashboard();
+  updatePortfolioBadge();
+  showToast(`CSV imported — ${added} added, ${failed} skipped${failed ? ' (check console)' : ''}`);
+}
+
+// ── Correlation matrix ────────────────────────────────────────────
+
+function pearsonCorrelation(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (n < 5) return 0;
+  const ax = a.slice(-n), bx = b.slice(-n);
+  const ma = ax.reduce((s, v) => s + v, 0) / n;
+  const mb = bx.reduce((s, v) => s + v, 0) / n;
+  const num = ax.reduce((s, v, i) => s + (v - ma) * (bx[i] - mb), 0);
+  const da  = Math.sqrt(ax.reduce((s, v) => s + (v - ma) ** 2, 0));
+  const db  = Math.sqrt(bx.reduce((s, v) => s + (v - mb) ** 2, 0));
+  return da && db ? Math.round(num / (da * db) * 100) / 100 : 0;
+}
+
+function dailyReturns(closes) {
+  const r = [];
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i] != null && closes[i - 1] != null && closes[i - 1] !== 0)
+      r.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+  }
+  return r;
+}
+
+async function buildCorrelationMatrix() {
+  const positions = loadPortfolio();
+  if (positions.length < 2) { showToast('Need at least 2 positions for correlation', 'error'); return; }
+
+  const btn = document.getElementById('pCorrBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Computing…'; }
+
+  const now   = Math.floor(Date.now() / 1000);
+  const start = now - 90 * 24 * 3600;
+
+  const results = await Promise.allSettled(
+    positions.map(p => fetchYahooOHLCV(p.symbol, start, now, '1d'))
+  );
+
+  const valid = results
+    .map((r, i) => r.status === 'fulfilled' ? { symbol: positions[i].symbol, closes: r.value.close } : null)
+    .filter(Boolean);
+
+  if (valid.length < 2) {
+    showToast('Could not fetch data for correlation matrix', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Compute'; }
+    return;
+  }
+
+  const symbols = valid.map(v => v.symbol);
+  const returns = valid.map(v => dailyReturns(v.closes));
+  const n = symbols.length;
+  const matrix = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, j) => i === j ? 1 : pearsonCorrelation(returns[i], returns[j]))
+  );
+
+  renderCorrelationHeatmap('pCorrMatrix', symbols, matrix);
+  if (btn) { btn.disabled = false; btn.textContent = '↻ Compute'; }
+}
+
+// ── Multi-timeframe signal consensus ──────────────────────────────
+
+async function runConsensusAnalysis(data) {
+  const tfList = ['scalp', 'swing', 'longterm'];
+  return Promise.all(tfList.map(async tf => {
+    try {
+      const config = timeframeConfig(tf);
+      const ind    = buildIndicators(data, config);
+      const { bestSignal } = await optimise(data.close, ind, { nTrials: 120, riskLevel: 0.5 });
+      const lastRSI = ind.rsi.filter(v => v != null).pop();
+      return { tf, signal: currentSignal(bestSignal, lastRSI, 0.5) };
+    } catch { return { tf, signal: 'HOLD' }; }
+  }));
+}
+
+function renderConsensusResults(results) {
+  const card = document.getElementById('aConsensusCard');
+  const el   = document.getElementById('aConsensus');
+  if (!card || !el) return;
+
+  const buys  = results.filter(r => r.signal === 'BUY'  || r.signal === 'WATCH-BUY').length;
+  const sells = results.filter(r => r.signal === 'SELL' || r.signal === 'WATCH-SELL').length;
+
+  let consensus, cls;
+  if      (buys  === 3) { consensus = 'STRONG BUY';  cls = 'badge-buy';  }
+  else if (buys  === 2) { consensus = 'BUY';          cls = 'badge-buy';  }
+  else if (sells === 3) { consensus = 'STRONG SELL';  cls = 'badge-sell'; }
+  else if (sells === 2) { consensus = 'SELL';          cls = 'badge-sell'; }
+  else                  { consensus = 'MIXED / HOLD';  cls = 'badge-hold'; }
+
+  const tfLabel = { scalp: 'Scalp', swing: 'Swing', longterm: 'Long-term' };
+  el.innerHTML = `
+    <div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
+      ${results.map(r => `
+        <div style="text-align:center;">
+          <div style="font-size:9px; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); margin-bottom:5px;">${tfLabel[r.tf]}</div>
+          <span class="badge ${signalBadgeClass(r.signal)}">${r.signal}</span>
+        </div>`).join('')}
+      <div style="margin-left:auto; text-align:right;">
+        <div style="font-size:9px; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); margin-bottom:5px;">Overall Consensus</div>
+        <span class="badge ${cls}" style="font-size:13px; padding:5px 14px;">${consensus}</span>
+      </div>
+    </div>
+    <div style="font-size:10px; color:var(--muted); margin-top:10px;">
+      All three timeframes run on the same OHLCV data with timeframe-tuned indicator parameters (120 optimisation trials each).
+    </div>`;
+  card.style.display = 'block';
+}
+
 // ── Backup export / import ────────────────────────────────────────
 
 function exportData() {
@@ -924,6 +1221,7 @@ function exportData() {
     portfolio: localStorage.getItem(STORAGE_KEY),
     watchlist: localStorage.getItem(WATCHLIST_KEY),
     settings:  localStorage.getItem(SETTINGS_KEY),
+    snapshots: localStorage.getItem(SNAPSHOTS_KEY),
   };
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -943,6 +1241,7 @@ function importData(event) {
       if (backup.portfolio) localStorage.setItem(STORAGE_KEY,   backup.portfolio);
       if (backup.watchlist) localStorage.setItem(WATCHLIST_KEY, backup.watchlist);
       if (backup.settings)  localStorage.setItem(SETTINGS_KEY,  backup.settings);
+      if (backup.snapshots) localStorage.setItem(SNAPSHOTS_KEY, backup.snapshots);
       state.portfolio = loadPortfolio();
       state.watchlist = loadWatchlist();
       state.settings  = loadSettings();

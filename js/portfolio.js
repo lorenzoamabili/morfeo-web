@@ -3,9 +3,10 @@
 // Persistent portfolio management via localStorage
 // ═══════════════════════════════════════════════════════════════
 
-const STORAGE_KEY = 'meridian_portfolio_v3';
+const STORAGE_KEY   = 'meridian_portfolio_v3';
 const WATCHLIST_KEY = 'meridian_watchlist_v3';
-const SETTINGS_KEY = 'meridian_settings_v3';
+const SETTINGS_KEY  = 'meridian_settings_v3';
+const SNAPSHOTS_KEY = 'meridian_snapshots_v1';
 
 // ── Defaults ─────────────────────────────────────────────────────
 
@@ -186,6 +187,7 @@ async function syncToFirestore() {
       portfolio:  loadPortfolio(),
       watchlist:  loadWatchlist(),
       settings:   loadSettings(),
+      snapshots:  loadSnapshots(),
       updatedAt:  firebase.firestore.FieldValue.serverTimestamp(),
     });
   } catch (e) {
@@ -205,7 +207,31 @@ async function loadUserDataFromFirestore(uid) {
       localStorage.setItem(WATCHLIST_KEY, JSON.stringify(data.watchlist));
     if (data.settings && typeof data.settings === 'object')
       localStorage.setItem(SETTINGS_KEY,  JSON.stringify(data.settings));
+    if (Array.isArray(data.snapshots) && data.snapshots.length)
+      localStorage.setItem(SNAPSHOTS_KEY, JSON.stringify(data.snapshots));
   } catch (e) {
     console.warn('[Morfeo] Could not load Firestore data:', e.message);
   }
+}
+
+// ── Portfolio value snapshots ──────────────────────────────────────
+
+function savePortfolioSnapshot(totalValue) {
+  if (!totalValue || totalValue <= 0) return;
+  const today = new Date().toISOString().split('T')[0];
+  const snapshots = loadSnapshots();
+  const idx = snapshots.findIndex(s => s.date === today);
+  const value = Math.round(totalValue * 100) / 100;
+  if (idx >= 0) snapshots[idx].value = value;
+  else snapshots.push({ date: today, value });
+  if (snapshots.length > 365) snapshots.splice(0, snapshots.length - 365);
+  try { localStorage.setItem(SNAPSHOTS_KEY, JSON.stringify(snapshots)); } catch (e) {}
+  scheduleFirestoreSync();
+}
+
+function loadSnapshots() {
+  try {
+    const s = localStorage.getItem(SNAPSHOTS_KEY);
+    return s ? JSON.parse(s) : [];
+  } catch { return []; }
 }
