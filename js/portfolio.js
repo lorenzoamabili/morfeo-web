@@ -130,15 +130,51 @@ function positionPnL(pos) {
   };
 }
 
+// ── USD → EUR conversion rate ─────────────────────────────────────
+// Cached in localStorage for 1 hour; falls back to 1.0 if unavailable.
+
+const FX_RATE_KEY = 'morfeo_usd_eur_rate_v1';
+
+let _usdEurRate = (() => {
+  try {
+    const s = localStorage.getItem(FX_RATE_KEY);
+    if (s) { const d = JSON.parse(s); if (Date.now() - d.ts < 3600000) return d.rate; }
+  } catch {}
+  return 1;
+})();
+
+async function fetchUsdEurRate() {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const start = now - 5 * 24 * 3600;
+    const r = await fetch(`/api/ohlcv?symbol=EURUSD%3DX&period1=${start}&period2=${now}&interval=1d`);
+    if (r.ok) {
+      const json = await r.json();
+      const closes = json?.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
+      if (closes?.length) {
+        const last = closes.filter(v => v != null).pop();
+        if (last) {
+          // EURUSD=X: 1 EUR = `last` USD  →  1 USD = 1/last EUR
+          _usdEurRate = 1 / last;
+          localStorage.setItem(FX_RATE_KEY, JSON.stringify({ rate: _usdEurRate, ts: Date.now() }));
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[Morfeo] Could not fetch USD/EUR rate:', e.message);
+  }
+}
+
 // ── Format helpers ────────────────────────────────────────────────
 
 function fmtCurrency(v, currency = 'EUR') {
   if (v == null) return '—';
-  const abs = Math.abs(v);
+  const converted = currency === 'EUR' ? v * _usdEurRate : v;
+  const abs = Math.abs(converted);
   const str = abs >= 1000
     ? abs.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
     : abs.toFixed(2);
-  const sign = v < 0 ? '-' : '';
+  const sign = converted < 0 ? '-' : '';
   const sym = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : currency + ' ';
   return `${sign}${sym}${str}`;
 }

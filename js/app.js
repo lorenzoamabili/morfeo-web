@@ -37,6 +37,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupPortfolioAddAutocomplete();
   startAutoSignalRefresh();
 
+  // Fetch live USD→EUR rate, then re-render once available
+  fetchUsdEurRate().then(() => { renderDashboard(); renderPortfolioView(); });
+
   // Mobile menu
   document.getElementById('menuToggle')?.addEventListener('click', () => {
     document.getElementById('sidebar').classList.toggle('open');
