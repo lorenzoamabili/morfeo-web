@@ -36,36 +36,122 @@ async function searchYahooTickers(query) {
   return (json?.quotes || []).filter(q => q.symbol && q.quoteType);
 }
 
+// ── sessionStorage OHLCV cache (5-minute TTL) ────────────────────
+const _OHLCV_TTL = 5 * 60 * 1000;
+function _ohlcvCacheGet(key) {
+  try {
+    const hit = sessionStorage.getItem(key);
+    if (!hit) return null;
+    const { ts, data } = JSON.parse(hit);
+    return Date.now() - ts < _OHLCV_TTL ? data : null;
+  } catch { return null; }
+}
+function _ohlcvCacheSet(key, data) {
+  try { sessionStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+}
+
 // ── Fetch OHLCV from Yahoo Finance ──────────────────────────────
 
 async function fetchYahooOHLCV(symbol, period1, period2, interval = '1d') {
+  // Cache key omits period2 (current time) since data is the same within the TTL window
+  const cacheKey = `ohlcv:${symbol}:${period1}:${interval}`;
+  const cached = _ohlcvCacheGet(cacheKey);
+  if (cached) return cached;
+
+  let json;
+
   // Primary: backend proxy (avoids CORS blocks on hosted environments)
   try {
     const r = await fetch(
       `/api/ohlcv?symbol=${encodeURIComponent(symbol)}&period1=${period1}&period2=${period2}&interval=${interval}`
     );
     if (r.ok) {
-      const json = await r.json();
-      if (json?.chart?.result) return parseOHLCV(json, symbol);
+      const j = await r.json();
+      if (j?.chart?.result) json = j;
     }
   } catch (e) { }
 
-  // Fallback: direct Yahoo Finance (works locally, may be CORS-blocked when hosted)
-  const url = `${YF_BASE}${encodeURIComponent(symbol)}?period1=${period1}&period2=${period2}&interval=${interval}&events=history`;
-  let json;
-  try {
-    const r = await fetch(url, { mode: 'cors' });
-    if (r.ok) json = await r.json();
-  } catch (e) { }
-
+  // Fallback 1: direct Yahoo Finance (works locally, may be CORS-blocked when hosted)
   if (!json) {
-    const r = await fetch(ALLORIGINS + encodeURIComponent(url));
-    if (!r.ok) throw new Error(`Network error fetching ${symbol}`);
-    const w = await r.json();
-    json = JSON.parse(w.contents);
+    const url = `${YF_BASE}${encodeURIComponent(symbol)}?period1=${period1}&period2=${period2}&interval=${interval}&events=history`;
+    try {
+      const r = await fetch(url, { mode: 'cors' });
+      if (r.ok) json = await r.json();
+    } catch (e) { }
+
+    // Fallback 2: allorigins CORS proxy
+    if (!json) {
+      try {
+        const r = await fetch(ALLORIGINS + encodeURIComponent(url));
+        if (r.ok) { const w = await r.json(); json = JSON.parse(w.contents); }
+      } catch (e) { }
+    }
   }
 
-  return parseOHLCV(json, symbol);
+  // Fallback 3: Alpha Vantage (requires API key in Settings)
+  if (!json) {
+    const avKey = (typeof window !== 'undefined' && window._morfeoSettings?.alphaVantageKey) || '';
+    if (avKey) json = await _fetchAlphaVantage(symbol, interval, avKey);
+  }
+
+  if (!json) throw new Error(`Network error fetching ${symbol} — all data sources failed.`);
+
+  const result = parseOHLCV(json, symbol);
+  _ohlcvCacheSet(cacheKey, result);
+  return result;
+}
+
+// ── Alpha Vantage fallback data source ───────────────────────────
+async function _fetchAlphaVantage(symbol, interval, apiKey) {
+  try {
+    let fn, tsKey;
+    if (interval === '1h') {
+      fn = 'TIME_SERIES_INTRADAY'; tsKey = 'Time Series (60min)';
+    } else if (interval === '1wk') {
+      fn = 'TIME_SERIES_WEEKLY_ADJUSTED'; tsKey = 'Weekly Adjusted Time Series';
+    } else {
+      fn = 'TIME_SERIES_DAILY_ADJUSTED'; tsKey = 'Time Series (Daily)';
+    }
+    let url = `https://www.alphavantage.co/query?function=${fn}&symbol=${encodeURIComponent(symbol)}&outputsize=full&apikey=${encodeURIComponent(apiKey)}`;
+    if (interval === '1h') url += '&interval=60min';
+
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const raw = await r.json();
+    if (raw['Error Message'] || raw['Note'] || raw['Information']) return null;
+
+    const ts = raw[tsKey];
+    if (!ts) return null;
+
+    const entries = Object.entries(ts)
+      .map(([date, v]) => ({
+        date,
+        open:   parseFloat(v['1. open']),
+        high:   parseFloat(v['2. high']),
+        low:    parseFloat(v['3. low']),
+        close:  parseFloat(v['4. close'] || v['5. adjusted close']),
+        volume: parseInt(v['5. volume'] || v['6. volume'] || '0', 10),
+      }))
+      .filter(e => !isNaN(e.close))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    if (entries.length < 5) return null;
+
+    // Wrap in Yahoo-format envelope so parseOHLCV can handle it
+    return {
+      chart: { result: [{
+        timestamp: entries.map(e => Math.floor(new Date(e.date + 'T12:00:00Z').getTime() / 1000)),
+        meta: { symbol, currency: 'USD', exchangeName: 'AlphaVantage', longName: symbol },
+        indicators: { quote: [{
+          open:   entries.map(e => e.open),
+          high:   entries.map(e => e.high),
+          low:    entries.map(e => e.low),
+          close:  entries.map(e => e.close),
+          volume: entries.map(e => e.volume),
+        }] }
+      }] }
+    };
+  } catch { return null; }
 }
 
 function parseOHLCV(json, symbol) {
@@ -314,6 +400,18 @@ function calcATR(high, low, close, period = 14) {
   return calcSMA(tr, period);
 }
 
+// On-Balance Volume — cumulative volume indicator
+function calcOBV(close, volume) {
+  const obv = new Array(close.length).fill(0);
+  for (let i = 1; i < close.length; i++) {
+    const v = volume[i] ?? 0;
+    if (close[i] > close[i - 1])      obv[i] = obv[i - 1] + v;
+    else if (close[i] < close[i - 1]) obv[i] = obv[i - 1] - v;
+    else                               obv[i] = obv[i - 1];
+  }
+  return obv;
+}
+
 // Z-score normalisation
 function calcZScore(arr, w = 20) {
   const sma = calcSMA(arr, w);
@@ -335,7 +433,7 @@ function rollingVol(close, w = 20, periodsPerYear = 252) {
 // ── Build all indicator signals at once ──────────────────────────
 
 function buildIndicators(data, config = {}) {
-  const { close, high, low } = data;
+  const { close, high, low, volume } = data;
   const {
     rsiPeriod = 14,
     emaSlow = 200,
@@ -355,6 +453,12 @@ function buildIndicators(data, config = {}) {
   const ichi = calcIchimoku(high, low, close);
   const atr = calcATR(high, low, close);
   const vol = rollingVol(close, 20, periodsPerYear);
+
+  // OBV + EMA signal (precomputed once)
+  const obv = calcOBV(close, volume || []);
+  const obvEMA = calcEMA(obv, 20);
+  const obvBuy  = obv.map((v, i) => obvEMA[i] != null && v > obvEMA[i] ? 1 : 0);
+  const obvSell = obv.map((v, i) => obvEMA[i] != null && v < obvEMA[i] ? 1 : 0);
 
   return {
     rsi,
@@ -385,6 +489,7 @@ function buildIndicators(data, config = {}) {
     ichiSell: ichi.sell,
 
     atr, vol,
+    obv, obvEMA, obvBuy, obvSell,
   };
 }
 

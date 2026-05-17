@@ -14,15 +14,15 @@ function normaliseWeights(w) {
 
 // ── Build net signal from indicators + weights ───────────────────
 function buildNetSignal(ind, weights) {
-  const { rsiW, trendW, macdW, bollW, ichiW } = weights;
+  const { rsiW, trendW, macdW, bollW, ichiW, obvW = 0 } = weights;
   const n = ind.rsiBuy.length;
 
   const raw = new Array(n);
   for (let i = 0; i < n; i++) {
-    const tBuy = trendW * (ind.e200Buy[i] + ind.e100Buy[i] + ind.e50Buy[i] + ind.e25Buy[i]);
+    const tBuy  = trendW * (ind.e200Buy[i]  + ind.e100Buy[i]  + ind.e50Buy[i]  + ind.e25Buy[i]);
     const tSell = trendW * (ind.e200Sell[i] + ind.e100Sell[i] + ind.e50Sell[i] + ind.e25Sell[i]);
-    const buy = rsiW * ind.rsiBuy[i] + tBuy + macdW * ind.macdBuy[i] + bollW * ind.bollBuy[i] + ichiW * ind.ichiBuy[i];
-    const sell = rsiW * ind.rsiSell[i] + tSell + macdW * ind.macdSell[i] + bollW * ind.bollSell[i] + ichiW * ind.ichiSell[i];
+    const buy  = rsiW * ind.rsiBuy[i]  + tBuy  + macdW * ind.macdBuy[i]  + bollW * ind.bollBuy[i]  + ichiW * ind.ichiBuy[i]  + obvW * (ind.obvBuy?.[i]  ?? 0);
+    const sell = rsiW * ind.rsiSell[i] + tSell + macdW * ind.macdSell[i] + bollW * ind.bollSell[i] + ichiW * ind.ichiSell[i] + obvW * (ind.obvSell?.[i] ?? 0);
     raw[i] = buy - sell;
   }
   return transformSignal(raw);
@@ -139,9 +139,11 @@ function buyAndHold(close, initialBalance = 300) {
   return Math.round(((endVal - startVal) / startVal) * 10000) / 100;
 }
 
-// ── Genetic / random optimiser ───────────────────────────────────
-// nTrials: total random weight sets to try
-// Yields progress updates via onProgress(0–1)
+// ── Optimiser: random search + hill-climbing, with train/test split ─
+// Phase 1: 400-trial random search on the training slice (first 70% of data).
+// Phase 2: coordinate-descent hill-climbing to refine the best candidate.
+// Evaluation: final signal is built on full data; out-of-sample return is
+// measured on the held-out 30% that was never seen during optimisation.
 
 async function optimise(close, ind, options = {}) {
   const {
@@ -152,46 +154,77 @@ async function optimise(close, ind, options = {}) {
     backtestOpts = {},
   } = options;
 
-  let bestProfit = -Infinity;
+  const splitIdx = Math.max(20, Math.floor(close.length * 0.7));
+  const trainClose = close.slice(0, splitIdx);
+
+  let bestTrainProfit = -Infinity;
   let bestWeights = null;
-  let bestSignal = null;
 
-  const CHUNK = 60;
+  const CHUNK = 50;
+  const TOTAL_PHASE1 = nTrials;
 
-  for (let start = 0; start < nTrials; start += CHUNK) {
-    await new Promise(r => setTimeout(r, 0)); // yield
+  // ── Phase 1: random search on training slice ──────────────────
+  for (let start = 0; start < TOTAL_PHASE1; start += CHUNK) {
+    await new Promise(r => setTimeout(r, 0)); // yield to UI
 
-    for (let t = start; t < Math.min(start + CHUNK, nTrials); t++) {
+    for (let t = start; t < Math.min(start + CHUNK, TOTAL_PHASE1); t++) {
       const raw = {
-        rsiW: Math.random() * 2 - 1,
+        rsiW:   Math.random() * 2 - 1,
         trendW: Math.random() * 2 - 1,
-        macdW: Math.random() * 2 - 1,
-        bollW: Math.random() * 2 - 1,
-        ichiW: Math.random() * 2 - 1,
+        macdW:  Math.random() * 2 - 1,
+        bollW:  Math.random() * 2 - 1,
+        ichiW:  Math.random() * 2 - 1,
+        obvW:   Math.random() * 2 - 1,
       };
       const w = normaliseWeights(raw);
-      let net = buildNetSignal(ind, w);
-
-      // Force buy at specified date
-      if (buyDayIdx >= 0) {
-        const maxV = Math.max(...net);
-        const copy = [...net];
-        copy[buyDayIdx] = maxV;
-        net = copy;
-      }
-
-      const result = backtest(close, net, { riskLevel, ...backtestOpts });
-      if (result.profitPct > bestProfit) {
-        bestProfit = result.profitPct;
+      const trainNet = buildNetSignal(ind, w).slice(0, splitIdx);
+      const result = backtest(trainClose, trainNet, { riskLevel, ...backtestOpts });
+      if (result.profitPct > bestTrainProfit) {
+        bestTrainProfit = result.profitPct;
         bestWeights = w;
-        bestSignal = net;
       }
     }
 
-    if (onProgress) onProgress(Math.min((start + CHUNK) / nTrials, 1));
+    if (onProgress) onProgress(Math.min((start + CHUNK) / TOTAL_PHASE1, 1) * 0.80);
   }
 
-  return { bestWeights, bestSignal, bestProfit };
+  // ── Phase 2: coordinate-descent hill-climbing on training slice ─
+  const HILL_STEP = 0.15;
+  const HILL_MAX_ITERS = 30;
+  for (let iter = 0; iter < HILL_MAX_ITERS; iter++) {
+    await new Promise(r => setTimeout(r, 0));
+    let improved = false;
+    for (const key of Object.keys(bestWeights)) {
+      for (const delta of [HILL_STEP, -HILL_STEP]) {
+        const cw = normaliseWeights({ ...bestWeights, [key]: bestWeights[key] + delta });
+        const trainNet = buildNetSignal(ind, cw).slice(0, splitIdx);
+        const r = backtest(trainClose, trainNet, { riskLevel, ...backtestOpts });
+        if (r.profitPct > bestTrainProfit) {
+          bestTrainProfit = r.profitPct;
+          bestWeights = cw;
+          improved = true;
+        }
+      }
+    }
+    if (!improved) break;
+    if (onProgress) onProgress(0.80 + (iter / HILL_MAX_ITERS) * 0.15);
+  }
+
+  // ── Build full signal for charting ──────────────────────────────
+  let bestSignal = buildNetSignal(ind, bestWeights);
+  if (buyDayIdx >= 0) {
+    const maxV = Math.max(...bestSignal);
+    bestSignal = [...bestSignal];
+    bestSignal[buyDayIdx] = maxV;
+  }
+
+  // ── Out-of-sample evaluation on held-out 30% ───────────────────
+  const testClose  = close.slice(splitIdx);
+  const testSignal = bestSignal.slice(splitIdx);
+  const testResult = backtest(testClose, testSignal, { riskLevel, ...backtestOpts });
+
+  if (onProgress) onProgress(1);
+  return { bestWeights, bestSignal, bestProfit: bestTrainProfit, testProfit: testResult.profitPct, splitIdx };
 }
 
 // ── Risk profile helpers ─────────────────────────────────────────

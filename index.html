@@ -264,6 +264,10 @@
               <span style="color:var(--muted); font-size:9px;" id="aRiskDesc">Standard sensitivity. Mirrors default optimised settings.</span>
               <span class="risk-label-risk">Speculative ▶</span>
             </div>
+            <div style="margin-top:5px; font-size:10px; color:var(--muted); display:flex; gap:16px;">
+              <span id="aRiskPreviewSL"></span>
+              <span id="aRiskPreviewPS"></span>
+            </div>
           </div>
 
           <div class="flex gap-12 items-center flex-wrap">
@@ -282,7 +286,7 @@
           <div class="steps">
             <div class="step active" id="aLoading-s1"><div class="step-bullet">1</div>Fetching Yahoo Finance data</div>
             <div class="step" id="aLoading-s2"><div class="step-bullet">2</div>Computing indicators</div>
-            <div class="step" id="aLoading-s3"><div class="step-bullet">3</div>Optimising signal weights (400 trials)</div>
+            <div class="step" id="aLoading-s3"><div class="step-bullet">3</div>Optimising weights (400 random + hill-climb, train/test split)</div>
             <div class="step" id="aLoading-s4"><div class="step-bullet">4</div>Rendering charts</div>
           </div>
         </div>
@@ -301,6 +305,7 @@
             </div>
             <div class="flex gap-12 items-center flex-wrap">
               <span class="badge badge-neu" id="aResSignal">—</span>
+              <span style="font-size:11px; font-family:var(--mono); cursor:help;" id="aResConfidence"></span>
               <span style="font-size:18px; color:var(--text2);" id="aResPrice">—</span>
               <button class="btn btn-ghost btn-sm" id="aBtnAddWatchlist">+ Watchlist</button>
               <button class="btn btn-primary btn-sm" id="aBtnAddPortfolio">+ Portfolio</button>
@@ -310,9 +315,14 @@
           <!-- KPIs -->
           <div class="grid-4 mb-16">
             <div class="stat-tile">
-              <div class="stat-label">Optimised Return</div>
+              <div class="stat-label" title="In-sample return: weights were optimised on the first 70% of the data period.">In-Sample Return</div>
               <div class="stat-value" id="aResProfit">—</div>
-              <div class="stat-sub">backtested strategy</div>
+              <div class="stat-sub">train period (70%)</div>
+            </div>
+            <div class="stat-tile">
+              <div class="stat-label" title="Out-of-sample return on the held-out 30% the optimiser never saw. A large gap vs in-sample suggests overfitting.">Out-of-Sample Return</div>
+              <div class="stat-value" id="aResTestProfit">—</div>
+              <div class="stat-sub">test period (30%)</div>
             </div>
             <div class="stat-tile">
               <div class="stat-label">Buy & Hold Return</div>
@@ -320,16 +330,13 @@
               <div class="stat-sub">passive benchmark</div>
             </div>
             <div class="stat-tile">
-              <div class="stat-label">Win Rate</div>
-              <div class="stat-value" id="aResWinRate">—</div>
-              <div class="stat-sub">profitable trades</div>
-            </div>
-            <div class="stat-tile">
               <div class="stat-label">Max Drawdown</div>
               <div class="stat-value neg" id="aResDrawdown">—</div>
               <div class="stat-sub">worst peak-to-trough</div>
             </div>
           </div>
+          <!-- Win rate + trades row (secondary) -->
+          <div class="grid-2 mb-16" style="display:none;" id="aWinRateRow"><!-- collapsed into trade stats card --></div>
 
           <!-- Risk + Trade metrics -->
           <div class="grid-2 mb-16">
@@ -505,6 +512,9 @@
           </div>
         </div>
 
+        <!-- Rebalancing suggestions -->
+        <div class="card mt-16" id="pRebalance" style="display:none;"></div>
+
         <!-- Correlation matrix -->
         <div class="card mt-16">
           <div class="card-title flex justify-between items-center" style="display:flex;">
@@ -585,6 +595,10 @@
                 <label>Initial Backtest Balance ($)</label>
                 <input id="sInitialBalance" type="number" min="100" value="10000"/>
               </div>
+              <div class="field">
+                <label>Alpha Vantage API Key <span style="color:var(--muted); font-weight:300; font-size:10px;">— optional, used as data fallback if Yahoo Finance fails</span></label>
+                <input id="sAlphaVantageKey" type="text" placeholder="Paste key from alphavantage.co (free tier)" autocomplete="off" style="font-family:var(--mono);"/>
+              </div>
               <button class="btn btn-primary" onclick="saveSettingsForm()">Save Settings</button>
               <div class="alert" id="sAlert"></div>
             </div>
@@ -603,6 +617,7 @@
                   <span class="badge badge-gold">Bollinger</span>
                   <span class="badge badge-gold">EMA 200/100/50/25</span>
                   <span class="badge badge-gold">Ichimoku</span>
+                  <span class="badge badge-gold">OBV</span>
                   <span class="badge badge-gold">ATR</span>
                   <span class="badge badge-gold">Ann. Volatility</span>
                 </div>

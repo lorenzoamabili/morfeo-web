@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS = {
   defaultPeriod: 6,
   initialBalance: 10000,
   currency: 'EUR',
+  alphaVantageKey: '',
 };
 
 // ── Settings ──────────────────────────────────────────────────────

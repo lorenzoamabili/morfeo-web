@@ -30,6 +30,23 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// ── Signal agreement: % of indicators pointing in signal's direction ─
+function signalAgreement(ind, signal) {
+  const i = ind.rsiBuy.length - 1;
+  const isBuy = signal === 'BUY' || signal === 'WATCH-BUY';
+  if (signal === 'HOLD') return 50;
+  const votes = [
+    isBuy ? ind.rsiBuy[i]  : ind.rsiSell[i],
+    isBuy ? (ind.e200Buy[i] + ind.e100Buy[i] + ind.e50Buy[i] + ind.e25Buy[i]) / 4
+           : (ind.e200Sell[i] + ind.e100Sell[i] + ind.e50Sell[i] + ind.e25Sell[i]) / 4,
+    isBuy ? ind.macdBuy[i]  : ind.macdSell[i],
+    isBuy ? ind.bollBuy[i]  : ind.bollSell[i],
+    isBuy ? ind.ichiBuy[i]  : ind.ichiSell[i],
+    isBuy ? (ind.obvBuy?.[i] ?? 0) : (ind.obvSell?.[i] ?? 0),
+  ];
+  return Math.round(votes.filter(v => v > 0).length / votes.length * 100);
+}
+
 // ── App state ────────────────────────────────────────────────────
 const state = {
   currentView: 'analysis',
@@ -50,12 +67,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   state.portfolio = loadPortfolio();
   state.watchlist = loadWatchlist();
 
+  // Expose Alpha Vantage key globally so indicators.js can read it
+  window._morfeoSettings = state.settings;
+
   initNav();
   initAnalysisView();
-  renderDashboard();
-  renderPortfolioView();
-  renderWatchlistView();
-  renderSettingsView();
+  _safeRender(renderDashboard);
+  _safeRender(renderPortfolioView);
+  _safeRender(renderWatchlistView);
+  _safeRender(renderSettingsView);
   updatePortfolioBadge();
   updateWatchlistBadge();
   startClock();
@@ -65,12 +85,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   startAutoSignalRefresh();
 
   // Fetch live USD→EUR rate, then re-render once available
-  fetchUsdEurRate().then(() => { renderDashboard(); renderPortfolioView(); });
+  fetchUsdEurRate().then(() => { _safeRender(renderDashboard); _safeRender(renderPortfolioView); });
 
   // Mobile menu + backdrop
   document.getElementById('menuToggle')?.addEventListener('click', () => _setSidebarOpen(true));
   document.getElementById('sidebarBackdrop')?.addEventListener('click', () => _setSidebarOpen(false));
+
+  // Global Cmd/Ctrl+Enter → run analysis when analysis view is active
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      if (state.currentView === 'analysis') { e.preventDefault(); runAnalysis(); }
+    }
+  });
 });
+
+function _safeRender(fn) {
+  try { fn(); } catch (err) {
+    console.error(`[Morfeo] Render error in ${fn.name}:`, err);
+    showToast(`UI error in ${fn.name} — check console`, 'error');
+  }
+}
 
 function _setSidebarOpen(open) {
   document.getElementById('sidebar')?.classList.toggle('open', open);
@@ -106,9 +140,14 @@ function switchView(name) {
   document.getElementById('topbarTitle').textContent = titles[name] || 'Morfeo';
 
   // Refresh views on switch
-  if (name === 'dashboard') renderDashboard();
-  if (name === 'portfolio') renderPortfolioView();
-  if (name === 'watchlist') renderWatchlistView();
+  if (name === 'dashboard') _safeRender(renderDashboard);
+  if (name === 'portfolio') _safeRender(renderPortfolioView);
+  if (name === 'watchlist') _safeRender(renderWatchlistView);
+
+  // Restore last analysis results when returning to the analysis view
+  if (name === 'analysis' && state.analysisResult) {
+    renderAnalysisResults(state.analysisResult, null);
+  }
 }
 
 // ── Clock ─────────────────────────────────────────────────────────
@@ -149,9 +188,11 @@ function initAnalysisView() {
     || document.querySelector('#tfSegment [data-tf="swing"]');
   if (defaultBtn) defaultBtn.classList.add('active');
 
-  // Risk slider
+  // Risk slider — update label + live stop-loss/position-size preview
   document.getElementById('aRiskSlider')?.addEventListener('input', e => {
-    updateRiskLabel(parseInt(e.target.value));
+    const val = parseInt(e.target.value);
+    updateRiskLabel(val);
+    _updateRiskPreview(val / 100);
   });
 
   // Buy date — no default, cap at today
@@ -270,6 +311,19 @@ function setupPortfolioAddAutocomplete() {
   setupAutocomplete('pAddSymbol', 'pAddSymbolDropdown', addPositionManual);
 }
 
+function _updateRiskPreview(riskLvl) {
+  const slEl = document.getElementById('aRiskPreviewSL');
+  const psEl = document.getElementById('aRiskPreviewPS');
+  if (!slEl || !psEl) return;
+  // Use last analysis data for ATR-based SL; fall back to a rough estimate
+  const atr = state.analysisResult?.ind?.atr;
+  const close = state.analysisResult?.data?.close;
+  const slPct = (atr && close) ? suggestStopLoss(close, atr, riskLvl) : null;
+  const psPct = suggestPositionSize(riskLvl);
+  slEl.textContent = slPct != null ? `≈ ${slPct}% stop-loss` : '';
+  psEl.textContent = `${psPct}% position size`;
+}
+
 function updateRiskLabel(val) {
   const profile = riskProfile(val);
   const el = document.getElementById('aRiskLabel');
@@ -339,7 +393,7 @@ async function runAnalysis() {
     const slPct = suggestStopLoss(data.close, ind.atr, riskLvl) / 100;
     const posSzPct = suggestPositionSize(riskLvl) / 100;
 
-    const { bestWeights, bestSignal, bestProfit } = await optimise(data.close, ind, {
+    const { bestWeights, bestSignal, bestProfit, testProfit, splitIdx } = await optimise(data.close, ind, {
       nTrials: 400,
       buyDayIdx,
       riskLevel: riskLvl,
@@ -363,7 +417,7 @@ async function runAnalysis() {
     const funds = await fundsPromise;
 
     // Cache for later portfolio use
-    state.analysisResult = { data, ind, net: bestSignal, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol };
+    state.analysisResult = { data, ind, net: bestSignal, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol, testProfit, splitIdx };
     state.portfolioCache[symbol] = state.analysisResult;
 
     setLoadingSteps('aLoading', false);
@@ -383,7 +437,7 @@ async function runAnalysis() {
 }
 
 function renderAnalysisResults(r, buyDate) {
-  const { data, ind, net, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol } = r;
+  const { data, ind, net, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol, testProfit, splitIdx } = r;
 
   const resEl = document.getElementById('aResults');
   resEl.style.display = 'block';
@@ -393,19 +447,34 @@ function renderAnalysisResults(r, buyDate) {
   document.getElementById('aResName').textContent = data.name !== symbol ? data.name : '';
   document.getElementById('aResExchange').textContent = data.exchange;
 
-  // Signal badge
+  // Signal badge + indicator agreement %
   const sigEl = document.getElementById('aResSignal');
   sigEl.textContent = signal;
   sigEl.className = 'badge ' + signalBadgeClass(signal);
   sigEl.title = explainSignal(signal);
+  const agreePct = signalAgreement(ind, signal);
+  const confEl = document.getElementById('aResConfidence');
+  if (confEl) {
+    confEl.textContent = `${agreePct}% agreement`;
+    confEl.title = `${agreePct}% of indicators (RSI, EMA trend, MACD, Bollinger, Ichimoku, OBV) agree with the ${signal} signal.`;
+    confEl.style.color = agreePct >= 67 ? 'var(--green)' : agreePct >= 34 ? 'var(--gold)' : 'var(--red)';
+  }
 
   // Stats
   const profitEl = document.getElementById('aResProfit');
   profitEl.textContent = fmtPct(result.profitPct);
   profitEl.className = 'stat-value ' + (result.profitPct >= 0 ? 'pos' : 'neg');
+  const trainPct = splitIdx ? Math.round(splitIdx / data.close.length * 100) : 70;
+  profitEl.title = `In-sample return: weights were optimised on the first ${trainPct}% of the data period.`;
 
-  // Tooltips to help interpret key stats
-  profitEl.title = 'Total return of the optimised strategy over the backtest period.';
+  // Out-of-sample (test) return
+  const testEl = document.getElementById('aResTestProfit');
+  if (testEl) {
+    const tp = testProfit ?? null;
+    testEl.textContent = tp != null ? fmtPct(tp) : '—';
+    testEl.className = 'stat-value ' + (tp != null ? (tp >= 0 ? 'pos' : 'neg') : '');
+    testEl.title = `Out-of-sample return: how the same weights performed on the last ${100 - trainPct}% of data not used in optimisation. A large gap vs in-sample suggests overfitting.`;
+  }
 
   const bahEl = document.getElementById('aResBah');
   bahEl.textContent = fmtPct(bah);
@@ -589,9 +658,33 @@ async function addPositionManual() {
     renderDashboard();
     updatePortfolioBadge();
     showToast(toastMsg);
+
+    // Warn if new position is highly correlated with existing holdings (background check)
+    _warnHighCorrelation(sym).catch(() => {});
   } catch (e) {
     showToast(e.message || `Could not fetch price for ${sym}`, 'error');
   }
+}
+
+async function _warnHighCorrelation(newSymbol) {
+  const others = loadPortfolio().filter(p => p.symbol !== newSymbol);
+  if (others.length === 0) return;
+  const now = Math.floor(Date.now() / 1000);
+  const start = now - 90 * 24 * 3600;
+  try {
+    const [newData, ...otherData] = await Promise.all([
+      fetchYahooOHLCV(newSymbol, start, now, '1d'),
+      ...others.map(p => fetchYahooOHLCV(p.symbol, start, now, '1d').catch(() => null)),
+    ]);
+    const newReturns = dailyReturns(newData.close);
+    const highCorr = others
+      .map((p, i) => otherData[i] ? { symbol: p.symbol, corr: pearsonCorrelation(newReturns, dailyReturns(otherData[i].close)) } : null)
+      .filter(r => r && r.corr >= 0.85);
+    if (highCorr.length > 0) {
+      const names = highCorr.map(r => `${r.symbol} (${(r.corr * 100).toFixed(0)}%)`).join(', ');
+      showToast(`⚠ ${newSymbol} is highly correlated with ${names} — concentration risk`, 'error');
+    }
+  } catch {}
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -775,6 +868,46 @@ function renderPortfolioView() {
   }).join('');
 
   _renderPortfolioCharts();
+  _renderRebalancing(state.portfolio, state.settings?.currency || 'EUR');
+}
+
+function _renderRebalancing(portfolio, currency) {
+  const el = document.getElementById('pRebalance');
+  if (!el) return;
+  if (portfolio.length < 2) { el.style.display = 'none'; return; }
+
+  const positions = portfolio.map(p => ({
+    symbol: p.symbol,
+    value: (p.currentPrice || p.buyPrice) * p.shares,
+  }));
+  const totalValue = positions.reduce((s, p) => s + p.value, 0);
+  if (!totalValue) { el.style.display = 'none'; return; }
+
+  const targetPct = 100 / positions.length;
+  const rows = positions
+    .map(p => ({ ...p, actualPct: p.value / totalValue * 100, diff: p.value / totalValue * 100 - targetPct }))
+    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  const maxDeviation = Math.max(...rows.map(r => Math.abs(r.diff)));
+  if (maxDeviation < 3) { el.style.display = 'none'; return; } // all balanced within 3%
+
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div class="card-title">Equal-Weight Rebalancing <span style="font-weight:300; font-size:10px; color:var(--muted);">— target ${targetPct.toFixed(1)}% each</span></div>
+    <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Positions deviating more than 3% from equal-weight allocation.</div>
+    ${rows.filter(r => Math.abs(r.diff) >= 3).map(r => {
+      const over = r.diff > 0;
+      const barW = Math.min(100, Math.abs(r.diff) / maxDeviation * 100);
+      return `<div style="display:flex; align-items:center; gap:10px; margin-bottom:7px;">
+        <span style="width:60px; font-size:12px; font-weight:500;">${escapeHtml(r.symbol)}</span>
+        <div style="flex:1; background:var(--surface2); border-radius:2px; height:6px; position:relative;">
+          <div style="position:absolute; ${over ? 'left:50%' : `right:${50}%;`} width:${barW / 2}%; height:100%; background:${over ? 'var(--red)' : 'var(--green)'}; border-radius:2px;"></div>
+        </div>
+        <span style="width:100px; font-size:11px; color:${over ? 'var(--red)' : 'var(--green)'}; text-align:right;">
+          ${over ? '▲ Overweight' : '▼ Underweight'} ${Math.abs(r.diff).toFixed(1)}%
+        </span>
+      </div>`;
+    }).join('')}`;
 }
 
 function _renderPortfolioCharts() {
@@ -1087,6 +1220,8 @@ function renderSettingsView() {
   document.getElementById('sDefaultTf').value = s.defaultTimeframe;
   document.getElementById('sDefaultPeriod').value = s.defaultPeriod;
   document.getElementById('sInitialBalance').value = s.initialBalance;
+  const avEl = document.getElementById('sAlphaVantageKey');
+  if (avEl) avEl.value = s.alphaVantageKey || '';
 }
 
 function saveSettingsForm() {
@@ -1096,9 +1231,11 @@ function saveSettingsForm() {
     defaultPeriod: parseInt(document.getElementById('sDefaultPeriod').value),
     initialBalance: parseFloat(document.getElementById('sInitialBalance').value),
     currency: state.settings.currency,
+    alphaVantageKey: (document.getElementById('sAlphaVantageKey')?.value || '').trim(),
   };
   saveSettings(s);
   state.settings = s;
+  window._morfeoSettings = s;
   showAlert('sAlert', 'ok', 'Settings saved.');
   setTimeout(() => hideAlert('sAlert'), 2500);
 }
