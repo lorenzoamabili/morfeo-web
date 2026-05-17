@@ -821,7 +821,7 @@ async function refreshPosition(symbol) {
 }
 
 async function refreshAllPositions() {
-  const btn = document.getElementById(‘pRefreshAll’);
+  const btn = document.getElementById('pRefreshAll');
   if (btn) btn.disabled = true;
   const positions = loadPortfolio();
 
@@ -840,7 +840,7 @@ async function refreshAllPositions() {
     if (!r.ok) continue;
     updatePositionLiveData(r.symbol, {
       currentPrice: r.price,
-      priceCurrency: r.currency || ‘USD’,
+      priceCurrency: r.currency || 'USD',
       name: r.name,
     });
   }
@@ -851,7 +851,7 @@ async function refreshAllPositions() {
   renderPortfolioView();
   renderDashboard();
   if (btn) btn.disabled = false;
-  showToast(‘All positions updated’);
+  showToast('All positions updated');
 }
 
 async function _computeSignal(symbol, name) {
