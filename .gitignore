@@ -6,6 +6,7 @@ server/node_modules/
 .env
 .env.local
 .env.*.local
+server/users.json
 
 # Logs
 *.log

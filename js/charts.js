@@ -462,7 +462,7 @@ function linkAnalysisCharts() {
   LINKED_ANALYSIS_IDS.forEach(id => {
     const el = document.getElementById(id);
     if (!el || !el.data) return;
-    if (el._linkRelayout && typeof el.removeListener === 'function') el.removeListener('plotly_relayout', el._linkRelayout);
+    if (el._linkRelayout) el.off('plotly_relayout', el._linkRelayout);
     el._linkRelayout = function(ev) {
       if (syncing || !ev || Object.keys(ev).length === 0) return;
       const range = ev['xaxis.range'] || (ev['xaxis.range[0]'] != null && ev['xaxis.range[1]'] != null

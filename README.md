@@ -1,6 +1,8 @@
 # Morfeo v3 — Full Investment Platform
 
-A fully client-side investment platform. No backend, no API key, no login.
+A browser-based investment platform. Works in two modes:
+- **Static / Netlify** — runs entirely client-side; Yahoo Finance is called directly (CORS fallback via allorigins). No backend required, no login required.
+- **Self-hosted** — run the included Express server for a reliable Yahoo Finance proxy, optional Gemini AI ticker search, and Firebase-based login.
 
 ## Features
 
@@ -57,11 +59,13 @@ morfeo-v3/
 
 ---
 
-## Deploy to Netlify
+## Deploy to Netlify (static mode)
+
+The `server/` directory is excluded from Netlify deployments via `.netlifyignore`. The frontend falls back to direct Yahoo Finance calls (with allorigins as a CORS fallback). Firebase auth is optional — if `firebase-config.js` is not filled in, the app runs without login.
 
 **Option A: Netlify Drop (fastest)**
 1. Go to https://app.netlify.com/drop
-2. Drag & drop the `morfeo-v3/` folder
+2. Drag & drop the `morfeo-web/` folder
 3. Live instantly
 
 **Option B: Git**
@@ -70,7 +74,30 @@ morfeo-v3/
 
 ---
 
-## Run Locally
+## Self-hosted (with Express backend)
+
+The Express server provides a reliable Yahoo Finance proxy and optional Gemini AI search.
+
+```bash
+cd server
+cp .env.example .env   # fill in GEMINI_API_KEY if desired
+npm install
+npm start              # runs on PORT (default 4000)
+```
+
+Then open `http://localhost:4000`.
+
+For production, run the server behind a reverse proxy (nginx, Caddy) and use a process manager:
+
+```bash
+npm install -g pm2
+pm2 start server.js --name morfeo
+pm2 save
+```
+
+---
+
+## Run Locally (no backend)
 
 ```bash
 # Any static server works:
@@ -80,7 +107,7 @@ python3 -m http.server 8080
 # then open http://localhost:8080
 ```
 
-> Opening `index.html` directly as a `file://` URL may cause CORS issues with the Yahoo Finance fetch.
+> Opening `index.html` directly as a `file://` URL will cause CORS errors.
 > Use a local server instead.
 
 ---

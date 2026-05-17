@@ -3,6 +3,33 @@
 // UI controller, view routing, event handling
 // ═══════════════════════════════════════════════════════════════
 
+// ── Concurrency limiter ───────────────────────────────────────────
+// Runs `fn` over `items` with at most `concurrency` tasks in-flight.
+// Returns results in original order.
+async function withConcurrency(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+
+// ── HTML escape helper (applied to all external data in innerHTML) ─
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ── App state ────────────────────────────────────────────────────
 const state = {
   currentView: 'analysis',
@@ -40,11 +67,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Fetch live USD→EUR rate, then re-render once available
   fetchUsdEurRate().then(() => { renderDashboard(); renderPortfolioView(); });
 
-  // Mobile menu
-  document.getElementById('menuToggle')?.addEventListener('click', () => {
-    document.getElementById('sidebar').classList.toggle('open');
-  });
+  // Mobile menu + backdrop
+  document.getElementById('menuToggle')?.addEventListener('click', () => _setSidebarOpen(true));
+  document.getElementById('sidebarBackdrop')?.addEventListener('click', () => _setSidebarOpen(false));
 });
+
+function _setSidebarOpen(open) {
+  document.getElementById('sidebar')?.classList.toggle('open', open);
+  document.getElementById('sidebarBackdrop')?.classList.toggle('open', open);
+}
 
 // ── Navigation ────────────────────────────────────────────────────
 
@@ -53,7 +84,7 @@ function initNav() {
     el.addEventListener('click', () => {
       const view = el.dataset.view;
       if (view) switchView(view);
-      document.getElementById('sidebar').classList.remove('open');
+      _setSidebarOpen(false);
     });
   });
 }
@@ -199,12 +230,13 @@ function _renderDropdown(results, input, dropdown) {
   }
   const typeLabel = { EQUITY: 'Stock', ETF: 'ETF', MUTUALFUND: 'Fund', CRYPTOCURRENCY: 'Crypto', INDEX: 'Index', FUTURE: 'Future' };
   dropdown.innerHTML = results.map(r => {
-    const name = r.shortname || r.longname || '';
-    const exch = r.exchange || '';
-    const type = typeLabel[r.quoteType] || r.quoteType || '';
+    const name = escapeHtml(r.shortname || r.longname || '');
+    const exch = escapeHtml(r.exchange || '');
+    const sym  = escapeHtml(r.symbol);
+    const type = escapeHtml(typeLabel[r.quoteType] || r.quoteType || '');
     return `
-      <div class="ticker-item" data-symbol="${r.symbol}">
-        <span class="ticker-item-symbol">${r.symbol}</span>
+      <div class="ticker-item" data-symbol="${sym}">
+        <span class="ticker-item-symbol">${sym}</span>
         <span class="ticker-item-name">${name}</span>
         <span class="ticker-item-meta">${[exch, type].filter(Boolean).join(' · ')}</span>
       </div>`;
@@ -592,12 +624,12 @@ function renderDashboard() {
     signalEl.innerHTML = alertPos.slice(0, 8).map(p => `
       <div class="flex items-center justify-between" style="padding:10px 0; border-bottom:1px solid var(--border);">
         <div>
-          <span class="font-serif" style="font-size:15px; font-weight:700;">${p.symbol}</span>
-          <span class="text-muted text-xs" style="margin-left:8px;">${p.name}</span>
+          <span class="font-serif" style="font-size:15px; font-weight:700;">${escapeHtml(p.symbol)}</span>
+          <span class="text-muted text-xs" style="margin-left:8px;">${escapeHtml(p.name)}</span>
         </div>
         <div class="flex gap-8 items-center">
           <span class="text-xs text-muted">${p.currentPrice ? fmtCurrency(p.currentPrice, 'EUR', p.priceCurrency || 'USD') : '—'}</span>
-          <span class="badge ${signalBadgeClass(p.lastSignal)}">${p.lastSignal}</span>
+          <span class="badge ${signalBadgeClass(p.lastSignal)}">${escapeHtml(p.lastSignal)}</span>
         </div>
       </div>`).join('');
   }
@@ -612,7 +644,7 @@ function renderDashboard() {
       return `
         <div class="flex items-center justify-between" style="padding:9px 0; border-bottom:1px solid var(--border);">
           <div>
-            <span style="font-weight:500; font-size:12px;">${p.symbol}</span>
+            <span style="font-weight:500; font-size:12px;">${escapeHtml(p.symbol)}</span>
             <span class="text-muted text-xs" style="margin-left:6px;">${p.shares} sh @ ${fmtCurrency(p.buyPrice, 'EUR', p.priceCurrency || 'USD')}</span>
           </div>
           <div class="flex gap-8 items-center">
@@ -714,28 +746,29 @@ function renderPortfolioView() {
 
   tbody.innerHTML = sortedPortfolio(state.portfolio).map(p => {
     const { pnl, pnlPct } = positionPnL(p);
+    const sym = escapeHtml(p.symbol);
     const divYield = p.dividendYield > 0
       ? `<span style="color:${p.dividendYield >= 2 ? 'var(--green)' : 'var(--text2)'};">${p.dividendYield.toFixed(2)}%</span>`
       : '<span class="text-muted">—</span>';
     return `
       <tr>
-        <td><span style="font-weight:500;">${p.symbol}</span></td>
-        <td class="text-muted text-xs">${p.name || '—'}</td>
+        <td><span style="font-weight:500;">${sym}</span></td>
+        <td class="text-muted text-xs">${escapeHtml(p.name) || '—'}</td>
         <td>${p.shares.toLocaleString()}</td>
         <td>${fmtCurrency(p.buyPrice, 'EUR', p.priceCurrency || 'USD')}</td>
         <td>${p.currentPrice ? fmtCurrency(p.currentPrice, 'EUR', p.priceCurrency || 'USD') : '—'}</td>
         <td class="${pnlPct != null ? (pnlPct >= 0 ? 'text-green' : 'text-red') : ''}">
           ${pnlPct != null ? fmtPct(pnlPct) + '<br><span style="font-size:10px;opacity:.7;">' + (pnl >= 0 ? '+' : '') + fmtCurrency(pnl, 'EUR', p.priceCurrency || 'USD') + '</span>' : '—'}
         </td>
-        <td>${p.lastSignal ? `<span class="badge ${signalBadgeClass(p.lastSignal)}" title="${explainSignal(p.lastSignal)}">${p.lastSignal}</span>` : '—'}</td>
+        <td>${p.lastSignal ? `<span class="badge ${signalBadgeClass(p.lastSignal)}" title="${explainSignal(p.lastSignal)}">${escapeHtml(p.lastSignal)}</span>` : '—'}</td>
         <td class="text-xs">${divYield}</td>
         <td class="text-xs text-muted">${p.buyDate ? fmtDate(p.buyDate) : (p.addedAt ? timeAgo(p.addedAt) : '—')}</td>
         <td>
           <div class="flex gap-8">
-            <button class="btn btn-ghost btn-xs" onclick="refreshPosition('${p.symbol}')" title="Update price from latest data">↻</button>
-            <button class="btn btn-ghost btn-xs" onclick="editPos('${p.symbol}')" title="Edit position (shares / buy price / date)">✎</button>
-            <button class="btn btn-ghost btn-xs" onclick="analyseFromWatchlist('${p.symbol}')" title="Re-run analysis for this symbol">Analyse</button>
-            <button class="btn btn-danger btn-xs" onclick="removePos('${p.symbol}')" title="Remove position from portfolio">✕ Sell</button>
+            <button class="btn btn-ghost btn-xs" onclick="refreshPosition('${sym}')" title="Update price from latest data">↻</button>
+            <button class="btn btn-ghost btn-xs" onclick="editPos('${sym}')" title="Edit position (shares / buy price / date)">✎</button>
+            <button class="btn btn-ghost btn-xs" onclick="analyseFromWatchlist('${sym}')" title="Re-run analysis for this symbol">Analyse</button>
+            <button class="btn btn-danger btn-xs" onclick="removePos('${sym}')" title="Remove position from portfolio">✕ Sell</button>
           </div>
         </td>
       </tr>`;
@@ -788,21 +821,61 @@ async function refreshPosition(symbol) {
 }
 
 async function refreshAllPositions() {
-  const btn = document.getElementById('pRefreshAll');
+  const btn = document.getElementById(‘pRefreshAll’);
   if (btn) btn.disabled = true;
   const positions = loadPortfolio();
 
-  // Run refreshes sequentially to avoid race conditions where
-  // multiple concurrent saves to localStorage can overwrite each
-  // other’s updates.
-  for (const p of positions) {
-    await refreshPosition(p.symbol);
+  // Fetch all prices concurrently (3 at a time), then write to localStorage
+  // in a single sequential pass to avoid read-modify-write races.
+  const fetched = await withConcurrency(positions, 3, async p => {
+    try {
+      const latest = await fetchLatestPriceAndMeta(p.symbol, { days: 90 });
+      return { symbol: p.symbol, ok: true, ...latest };
+    } catch (e) {
+      return { symbol: p.symbol, ok: false };
+    }
+  });
+
+  for (const r of fetched) {
+    if (!r.ok) continue;
+    updatePositionLiveData(r.symbol, {
+      currentPrice: r.price,
+      priceCurrency: r.currency || ‘USD’,
+      name: r.name,
+    });
   }
-  // Save daily value snapshot
+
   const summary = portfolioSummary(loadPortfolio());
   if (summary.totalValue > 0) savePortfolioSnapshot(summary.totalValue);
+  state.portfolio = loadPortfolio();
+  renderPortfolioView();
+  renderDashboard();
   if (btn) btn.disabled = false;
-  showToast('All positions updated');
+  showToast(‘All positions updated’);
+}
+
+async function _computeSignal(symbol, name) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+      const now   = Math.floor(Date.now() / 1000);
+      const start = now - 90 * 24 * 3600;
+      const data  = await fetchYahooOHLCV(symbol, start, now, '1d');
+      const ind   = buildIndicators(data);
+      const { bestSignal } = await optimise(data.close, ind, { nTrials: 100 });
+      const lastRSI = ind.rsi.filter(v => v != null).pop();
+      return {
+        ok: true,
+        currentPrice:  data.close[data.close.length - 1],
+        priceCurrency: data.currency || 'USD',
+        lastSignal:    currentSignal(bestSignal, lastRSI, 0.5),
+        name:          data.name || name,
+      };
+    } catch (e) {
+      console.warn(`[Morfeo] Signal refresh failed for ${symbol} (attempt ${attempt + 1}):`, e.message);
+    }
+  }
+  return { ok: false };
 }
 
 async function refreshPortfolioSignals() {
@@ -810,34 +883,21 @@ async function refreshPortfolioSignals() {
   if (btn) { btn.disabled = true; btn.textContent = '↻ Updating signals…'; }
 
   const positions = loadPortfolio();
-  let failed = 0;
 
-  for (const p of positions) {
-    let ok = false;
-    for (let attempt = 0; attempt < 2 && !ok; attempt++) {
-      try {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 2000)); // back-off on retry
-        const now   = Math.floor(Date.now() / 1000);
-        // 90 days → Ichimoku spanB needs 52 bars, EMA(200) needs warm-up; 30 days was too short
-        const start = now - 90 * 24 * 3600;
-        const data  = await fetchYahooOHLCV(p.symbol, start, now, '1d');
-        const ind   = buildIndicators(data);
-        const { bestSignal } = await optimise(data.close, ind, { nTrials: 100 });
-        const lastRSI = ind.rsi.filter(v => v != null).pop();
-        const signal  = currentSignal(bestSignal, lastRSI, 0.5);
-        updatePositionLiveData(p.symbol, {
-          currentPrice:  data.close[data.close.length - 1],
-          priceCurrency: data.currency || 'USD',
-          lastSignal:    signal,
-          name:          data.name || p.name,
-        });
-        ok = true;
-      } catch (e) {
-        console.warn(`[Morfeo] Signal refresh failed for ${p.symbol} (attempt ${attempt + 1}):`, e.message);
-      }
-    }
-    if (!ok) failed++;
-    await new Promise(r => setTimeout(r, 500));
+  // Compute signals 3 at a time; each task includes its own retry logic.
+  const results = await withConcurrency(positions, 3, p => _computeSignal(p.symbol, p.name));
+
+  // Write to localStorage sequentially after all fetches complete.
+  let failed = 0;
+  for (let i = 0; i < positions.length; i++) {
+    const r = results[i];
+    if (!r.ok) { failed++; continue; }
+    updatePositionLiveData(positions[i].symbol, {
+      currentPrice:  r.currentPrice,
+      priceCurrency: r.priceCurrency,
+      lastSignal:    r.lastSignal,
+      name:          r.name,
+    });
   }
 
   saveSignalsUpdateTime();
@@ -938,20 +998,23 @@ function renderWatchlistView() {
     return;
   }
 
-  container.innerHTML = state.watchlist.map(w => `
+  container.innerHTML = state.watchlist.map(w => {
+    const sym = escapeHtml(w.symbol);
+    return `
     <tr>
-      <td><span style="font-weight:500;">${w.symbol}</span></td>
-      <td class="text-muted text-xs">${w.name || '—'}</td>
+      <td><span style="font-weight:500;">${sym}</span></td>
+      <td class="text-muted text-xs">${escapeHtml(w.name) || '—'}</td>
       <td>${w.currentPrice ? fmtCurrency(w.currentPrice, 'EUR', w.priceCurrency || 'USD') : '—'}</td>
-      <td>${w.lastSignal ? `<span class="badge ${signalBadgeClass(w.lastSignal)}" title="${explainSignal(w.lastSignal)}">${w.lastSignal}</span>` : '—'}</td>
+      <td>${w.lastSignal ? `<span class="badge ${signalBadgeClass(w.lastSignal)}" title="${explainSignal(w.lastSignal)}">${escapeHtml(w.lastSignal)}</span>` : '—'}</td>
       <td class="text-xs text-muted">${w.lastUpdated ? timeAgo(w.lastUpdated) : '—'}</td>
       <td>
         <div class="flex gap-8">
-          <button class="btn btn-ghost btn-xs" onclick="analyseFromWatchlist('${w.symbol}')">Analyse</button>
-          <button class="btn btn-danger btn-xs" onclick="removeWatch('${w.symbol}')">✕</button>
+          <button class="btn btn-ghost btn-xs" onclick="analyseFromWatchlist('${sym}')">Analyse</button>
+          <button class="btn btn-danger btn-xs" onclick="removeWatch('${sym}')">✕</button>
         </div>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 function addWatchlistManual() {
@@ -983,37 +1046,25 @@ function analyseFromWatchlist(symbol) {
 async function refreshWatchlist() {
   const btn = document.getElementById('wRefreshBtn');
   if (btn) btn.disabled = true;
-  let failed = 0;
+  const items = [...state.watchlist];
 
-  for (const w of state.watchlist) {
-    let ok = false;
-    for (let attempt = 0; attempt < 2 && !ok; attempt++) {
-      try {
-        if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
-        const now = Math.floor(Date.now() / 1000);
-        const start = now - 90 * 24 * 3600; // 90 days for reliable indicators
-        const data = await fetchYahooOHLCV(w.symbol, start, now, '1d');
-        const ind = buildIndicators(data);
-        const { bestSignal } = await optimise(data.close, ind, { nTrials: 100 });
-        const lastRSI = ind.rsi.filter(v => v != null).pop();
-        const signal = currentSignal(bestSignal, lastRSI, 0.5);
-        const list = loadWatchlist();
-        const idx = list.findIndex(l => l.symbol === w.symbol);
-        if (idx >= 0) {
-          list[idx].currentPrice  = data.close[data.close.length - 1];
-          list[idx].priceCurrency = data.currency || 'USD';
-          list[idx].lastSignal    = signal;
-          list[idx].name          = data.name;
-          list[idx].lastUpdated   = Date.now();
-          saveWatchlist(list);
-        }
-        ok = true;
-      } catch (e) {
-        console.warn(`[Morfeo] Watchlist refresh failed for ${w.symbol} (attempt ${attempt + 1}):`, e.message);
-      }
+  const results = await withConcurrency(items, 3, w => _computeSignal(w.symbol, w.name));
+
+  // Write to localStorage in one sequential pass.
+  let failed = 0;
+  for (let i = 0; i < items.length; i++) {
+    const r = results[i];
+    if (!r.ok) { failed++; continue; }
+    const list = loadWatchlist();
+    const idx  = list.findIndex(l => l.symbol === items[i].symbol);
+    if (idx >= 0) {
+      list[idx].currentPrice  = r.currentPrice;
+      list[idx].priceCurrency = r.priceCurrency;
+      list[idx].lastSignal    = r.lastSignal;
+      list[idx].name          = r.name;
+      list[idx].lastUpdated   = Date.now();
+      saveWatchlist(list);
     }
-    if (!ok) failed++;
-    await new Promise(r => setTimeout(r, 500));
   }
 
   state.watchlist = loadWatchlist();
@@ -1204,17 +1255,11 @@ async function importPortfolioCSV(event) {
 
     if (!buyPrice) {
       try {
-        const r = await fetch(`/api/quote?symbol=${encodeURIComponent(sym)}`);
-        if (r.ok) {
-          const json = await r.json();
-          const q = json?.quoteResponse?.result?.[0];
-          if (q) {
-            buyPrice = q.regularMarketPrice || q.regularMarketPreviousClose || q.ask || null;
-            name = q.longName || q.shortName || sym;
-            sector = q.sector || null;
-            dividendYield = q.dividendYield ? q.dividendYield * 100 : 0;
-          }
-        }
+        const meta = await fetchLatestPriceAndMeta(sym, { days: 90 });
+        buyPrice = meta.price;
+        name = meta.name;
+        sector = meta.sector;
+        dividendYield = meta.dividendYield ?? 0;
       } catch (e) {}
     }
 
@@ -1280,13 +1325,14 @@ async function buildCorrelationMatrix() {
   const now   = Math.floor(Date.now() / 1000);
   const start = now - 90 * 24 * 3600;
 
-  const results = await Promise.allSettled(
-    positions.map(p => fetchYahooOHLCV(p.symbol, start, now, '1d'))
-  );
+  const fetched = await withConcurrency(positions, 3, async p => {
+    try {
+      const data = await fetchYahooOHLCV(p.symbol, start, now, '1d');
+      return { symbol: p.symbol, closes: data.close };
+    } catch { return null; }
+  });
 
-  const valid = results
-    .map((r, i) => r.status === 'fulfilled' ? { symbol: positions[i].symbol, closes: r.value.close } : null)
-    .filter(Boolean);
+  const valid = fetched.filter(Boolean);
 
   if (valid.length < 2) {
     showToast('Could not fetch data for correlation matrix', 'error');

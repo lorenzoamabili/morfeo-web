@@ -7,3 +7,4 @@
     X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://cdn.plot.ly https://www.gstatic.com https://apis.google.com 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://query1.finance.yahoo.com https://api.allorigins.win https://generativelanguage.googleapis.com https://*.firebaseio.com https://*.googleapis.com; img-src 'self' data:; frame-src 'none';"

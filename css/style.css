@@ -1226,3 +1226,85 @@ input[type=range].risk-slider:active::-webkit-slider-thumb { cursor: grabbing; }
   flex-shrink: 0;
   text-align: right;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   MOBILE & PRODUCTION
+══════════════════════════════════════════════════════════════════ */
+
+/* ── Sidebar backdrop (mobile tap-to-close overlay) ── */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 199; /* just below sidebar z-index:200 */
+  -webkit-tap-highlight-color: transparent;
+}
+@media (max-width: 860px) {
+  .sidebar-backdrop.open { display: block; }
+}
+
+/* ── Portfolio table horizontal scroll ── */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.table-scroll .data-table { min-width: 680px; }
+
+/* ── Portfolio add form: stack on mobile ── */
+@media (max-width: 700px) {
+  .add-form-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .add-form-row input {
+    width: 100% !important;
+  }
+}
+
+/* ── Chart sub-grid: single column on mobile ── */
+@media (max-width: 640px) {
+  .chart-grid-2x2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Touch targets: minimum 36px tap area ── */
+@media (max-width: 860px) {
+  .btn-xs {
+    padding: 7px 12px;
+    font-size: 10px;
+    min-height: 36px;
+  }
+  .btn-sm {
+    min-height: 36px;
+  }
+  /* Larger slider thumb for fat fingers */
+  input[type=range].risk-slider::-webkit-slider-thumb {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+/* ── Topbar: declutter on narrow screens ── */
+@media (max-width: 520px) {
+  .topbar-time { display: none; }
+  .topbar { padding: 10px 12px; }
+  .page-content { padding: 16px 12px; }
+  .page-title { font-size: 20px; }
+}
+
+/* ── Fund grid: 2 columns on mobile ── */
+@media (max-width: 600px) {
+  .fund-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Analysis result ticker: scale down on mobile ── */
+@media (max-width: 480px) {
+  #aResTicker { font-size: 22px !important; }
+}
+
+/* ── Increase base font readability on mobile ── */
+@media (max-width: 480px) {
+  html { font-size: 14px; }
+}

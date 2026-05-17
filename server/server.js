@@ -18,6 +18,25 @@ app.use(express.json());
 // Block access to the server directory
 app.use('/server', (_req, res) => res.status(403).end());
 
+// ── Rate limiter (sliding window, per IP) ─────────────────────────
+// Protects the Yahoo Finance proxy from being hammered.
+const _rlWindows = new Map(); // ip → timestamp[]
+function rateLimit(windowMs, maxRequests) {
+  return (req, res, next) => {
+    const ip  = req.ip;
+    const now = Date.now();
+    const hits = (_rlWindows.get(ip) || []).filter(t => now - t < windowMs);
+    if (hits.length >= maxRequests) {
+      return res.status(429).json({ error: 'Too many requests — slow down.' });
+    }
+    hits.push(now);
+    _rlWindows.set(ip, hits);
+    next();
+  };
+}
+// 120 API requests per minute per IP — well above normal interactive use
+app.use('/api', rateLimit(60_000, 120));
+
 // Serve static files from morfeo-web root (parent of server/)
 app.use(express.static(path.join(__dirname, '..')));
 
@@ -32,19 +51,29 @@ const YF_HEADERS = {
 // ── GET /api/ohlcv ────────────────────────────────────────────────
 // Proxies OHLCV chart data from Yahoo Finance.
 // Params: symbol, period1, period2, interval
+const VALID_INTERVALS = new Set(['1m','2m','5m','15m','30m','60m','90m','1h','1d','5d','1wk','1mo','3mo']);
+
 app.get('/api/ohlcv', async (req, res) => {
   const { symbol, period1, period2, interval } = req.query;
   if (!symbol) return res.status(400).json({ error: 'symbol required' });
 
+  const p1 = parseInt(period1, 10);
+  const p2 = parseInt(period2, 10);
+  const iv = VALID_INTERVALS.has(interval) ? interval : '1d';
+  if (!Number.isFinite(p1) || !Number.isFinite(p2) || p1 < 0 || p2 < 0) {
+    return res.status(400).json({ error: 'invalid period' });
+  }
+
   const url =
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
-    `?period1=${period1}&period2=${period2}&interval=${interval || '1d'}&events=history&includePrePost=false`;
+    `?period1=${p1}&period2=${p2}&interval=${iv}&events=history&includePrePost=false`;
   try {
     const r = await fetch(url, { headers: YF_HEADERS });
     if (!r.ok) return res.status(r.status).json({ error: 'Upstream error' });
     res.json(await r.json());
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[Morfeo] /api/ohlcv error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch data' });
   }
 });
 
@@ -61,7 +90,8 @@ app.get('/api/quote', async (req, res) => {
     if (!r.ok) return res.status(r.status).json({ error: 'Upstream error' });
     res.json(await r.json());
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[Morfeo] /api/quote error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch data' });
   }
 });
 

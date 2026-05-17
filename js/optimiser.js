@@ -220,40 +220,6 @@ function suggestPositionSize(riskLevel) {
   return Math.round((0.25 + riskLevel * 0.75) * 100);
 }
 
-// ── Correlation matrix ───────────────────────────────────────────
-// returns n×n matrix of Pearson correlations between return series
-
-function correlationMatrix(portfolioData) {
-  // portfolioData: array of {symbol, close[]}
-  const returns = portfolioData.map(p => {
-    const c = p.close;
-    return c.map((v, i) => i === 0 ? null : (v - c[i - 1]) / c[i - 1]).slice(1);
-  });
-
-  const n = portfolioData.length;
-  const matrix = [];
-
-  for (let i = 0; i < n; i++) {
-    matrix[i] = [];
-    for (let j = 0; j < n; j++) {
-      if (i === j) { matrix[i][j] = 1.0; continue; }
-      const a = returns[i];
-      const b = returns[j];
-      const len = Math.min(a.length, b.length);
-      const ai = a.slice(a.length - len);
-      const bi = b.slice(b.length - len);
-
-      const meanA = ai.reduce((s, v) => s + v, 0) / len;
-      const meanB = bi.reduce((s, v) => s + v, 0) / len;
-      const num = ai.reduce((s, v, k) => s + (v - meanA) * (bi[k] - meanB), 0);
-      const denA = Math.sqrt(ai.reduce((s, v) => s + (v - meanA) ** 2, 0));
-      const denB = Math.sqrt(bi.reduce((s, v) => s + (v - meanB) ** 2, 0));
-      matrix[i][j] = (denA * denB) === 0 ? 0 : Math.round(num / (denA * denB) * 100) / 100;
-    }
-  }
-  return matrix;
-}
-
 // ── Current signal detection ─────────────────────────────────────
 function currentSignal(net, rsiLast, riskLevel = 0.5) {
   const threshold = (1 - riskLevel) * 0.3;
