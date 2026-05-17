@@ -481,12 +481,10 @@ function renderAnalysisResults(r, buyDate) {
   bahEl.title = 'Buy & hold return over the same period (no timing, just holding).';
 
   const winRateEl = document.getElementById('aResWinRate');
-  winRateEl.textContent = result.numTrades ? `${result.winRate}%` : '—';
-  winRateEl.title = 'Percentage of closed trades that were profitable.';
+  if (winRateEl) { winRateEl.textContent = result.numTrades ? `${result.winRate}%` : '—'; winRateEl.title = 'Percentage of closed trades that were profitable.'; }
 
   const winRate2El = document.getElementById('aResWinRate2');
-  winRate2El.textContent = result.numTrades ? `${result.winRate}%` : '—';
-  winRate2El.title = 'Win rate shown on the equity curve card.';
+  if (winRate2El) { winRate2El.textContent = result.numTrades ? `${result.winRate}%` : '—'; winRate2El.title = 'Win rate shown on the equity curve card.'; }
 
   const ddEl = document.getElementById('aResDrawdown');
   ddEl.textContent = result.maxDrawdownPct > 0 ? `-${result.maxDrawdownPct}%` : '—';

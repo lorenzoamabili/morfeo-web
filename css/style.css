@@ -1308,3 +1308,44 @@ input[type=range].risk-slider:active::-webkit-slider-thumb { cursor: grabbing; }
 @media (max-width: 480px) {
   html { font-size: 14px; }
 }
+
+/* ── Signal header: wrap cleanly on mobile ── */
+@media (max-width: 560px) {
+  #aResConfidence { font-size: 10px; }
+  .grid-4 { gap: 10px; }
+}
+
+/* ── Risk preview labels ── */
+#aRiskPreviewSL, #aRiskPreviewPS {
+  font-family: var(--mono);
+  transition: color 0.2s;
+}
+
+/* ── Rebalancing bar chart centering line ── */
+.rebal-bar-wrap {
+  flex: 1;
+  background: var(--surface2);
+  border-radius: 2px;
+  height: 6px;
+  position: relative;
+  overflow: hidden;
+}
+.rebal-bar-wrap::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--border2);
+}
+
+/* ── Portfolio header: wrap action buttons on narrow mobile ── */
+@media (max-width: 600px) {
+  #view-portfolio .flex.justify-between { flex-direction: column; gap: 12px; }
+}
+
+/* ── Settings input full-width on small screens ── */
+@media (max-width: 640px) {
+  #sAlphaVantageKey { font-size: 11px; }
+}
