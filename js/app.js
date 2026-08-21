@@ -1061,9 +1061,11 @@ async function refreshPortfolioSignals() {
 }
 
 // ── Full Portfolio Analysis ──────────────────────────────────────
-// Runs the same 400-trial optimisation used by the single-symbol Analysis
-// view for every portfolio position, and caches each result so "View" can
-// jump straight to the full breakdown without recomputing.
+// Reads every ticker held in the portfolio and runs the same 400-trial
+// optimisation used by the single-symbol Analysis view for each one in turn
+// (sequentially — one symbol finishes before the next starts), caching each
+// result so "View" can jump straight to the full breakdown without
+// recomputing. All results are rendered together once every symbol is done.
 async function runFullPortfolioAnalysis() {
   const positions = loadPortfolio();
   if (positions.length === 0) { showToast('Add positions to your portfolio first', 'error'); return; }
@@ -1072,15 +1074,13 @@ async function runFullPortfolioAnalysis() {
   const statusEl = document.getElementById('aFullPortfolioStatus');
   if (btn) btn.disabled = true;
 
-  let done = 0;
   const total = positions.length;
-  const updateStatus = () => { if (statusEl) statusEl.textContent = `Analysing ${done}/${total}…`; };
-  updateStatus();
-
   const s = state.settings;
-  // Concurrency of 2 — each task is a 400-trial optimisation plus a
-  // fundamentals fetch, heavier than the lighter batch refreshes (which use 3).
-  const rows = await withConcurrency(positions, 2, async p => {
+  const rows = [];
+
+  for (let i = 0; i < positions.length; i++) {
+    const p = positions[i];
+    if (statusEl) statusEl.textContent = `Analysing ${p.symbol} (${i + 1}/${total})…`;
     try {
       const r = await computeFullAnalysis(p.symbol, {
         months: s.defaultPeriod,
@@ -1089,13 +1089,11 @@ async function runFullPortfolioAnalysis() {
         tf: p.timeframe || s.defaultTimeframe,
       });
       state.portfolioCache[p.symbol] = r;
-      done++; updateStatus();
-      return { ok: true, symbol: p.symbol, r };
+      rows.push({ ok: true, symbol: p.symbol, r });
     } catch (e) {
-      done++; updateStatus();
-      return { ok: false, symbol: p.symbol, error: e.message };
+      rows.push({ ok: false, symbol: p.symbol, error: e.message });
     }
-  });
+  }
 
   state.fullPortfolioAnalysis = { rows, generatedAt: Date.now() };
   renderFullPortfolioAnalysis();
