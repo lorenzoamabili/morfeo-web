@@ -277,10 +277,34 @@
             <button class="btn btn-primary" id="aRunBtn" onclick="runAnalysis()">
               Run Analysis →
             </button>
+            <button class="btn btn-ghost" id="aFullPortfolioBtn" onclick="runFullPortfolioAnalysis()"
+              title="Run the full 400-trial signal analysis (in/out-of-sample return, stop-loss, position sizing, fundamentals) for every position in your portfolio">
+              📊 Analyze Full Portfolio
+            </button>
+            <span id="aFullPortfolioStatus" class="text-xs text-muted" style="align-self:center;"></span>
             <div class="alert alert-warn" id="aWeekendWarn" style="margin:0; padding:5px 12px;"></div>
           </div>
 
           <div class="alert alert-error mt-8" id="aAlert"></div>
+        </div>
+
+        <!-- Full Portfolio Analysis -->
+        <div class="card table-scroll mb-16" id="aFullPortfolioCard" style="display:none; padding:0;">
+          <div class="flex justify-between items-center" style="padding:16px 16px 0;">
+            <div class="card-title" style="margin:0;">Full Portfolio Analysis</div>
+            <span id="aFullPortfolioTime" class="text-xs text-muted"></span>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Symbol</th><th>Signal</th><th>Agreement</th>
+                <th>In-Sample Return</th><th>Out-of-Sample Return</th>
+                <th>Win Rate</th><th>Max Drawdown</th>
+                <th>Sugg. Stop-Loss</th><th>Sugg. Position Size</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="aFullPortfolioBody"></tbody>
+          </table>
         </div>
 
         <!-- Loading -->
@@ -458,11 +482,6 @@
             </div>
             <button class="btn btn-ghost btn-sm" id="pRefreshAll" onclick="refreshAllPositions()">↻ Refresh All</button>
             <span id="pSignalsLastUpdate" class="text-xs text-muted" style="align-self:center;"></span>
-            <button class="btn btn-primary btn-sm" id="pFullAnalysisBtn" onclick="runFullPortfolioAnalysis()"
-              title="Run the full 400-trial signal analysis (in/out-of-sample return, stop-loss, position sizing, fundamentals) for every position">
-              📊 Full Analysis
-            </button>
-            <span id="pFullAnalysisStatus" class="text-xs text-muted" style="align-self:center;"></span>
             <button class="btn btn-ghost btn-sm" onclick="exportPortfolioCSV()">↓ CSV Export</button>
             <label class="btn btn-ghost btn-sm" style="cursor:pointer;" title="Import positions from CSV — columns: Symbol, Shares, Buy Price (opt), Buy Date (opt)">
               ↑ CSV Import
@@ -505,25 +524,6 @@
                 <div>Enter a ticker and number of shares above, then click Add.</div>
               </td></tr>
             </tbody>
-          </table>
-        </div>
-
-        <!-- Full Portfolio Analysis -->
-        <div class="card table-scroll mt-16" id="pFullAnalysisCard" style="display:none; padding:0;">
-          <div class="flex justify-between items-center" style="padding:16px 16px 0;">
-            <div class="card-title" style="margin:0;">Full Portfolio Analysis</div>
-            <span id="pFullAnalysisTime" class="text-xs text-muted"></span>
-          </div>
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Symbol</th><th>Signal</th><th>Agreement</th>
-                <th>In-Sample Return</th><th>Out-of-Sample Return</th>
-                <th>Win Rate</th><th>Max Drawdown</th>
-                <th>Sugg. Stop-Loss</th><th>Sugg. Position Size</th><th></th>
-              </tr>
-            </thead>
-            <tbody id="pFullAnalysisBody"></tbody>
           </table>
         </div>
 

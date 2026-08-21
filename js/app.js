@@ -146,8 +146,9 @@ function switchView(name) {
   if (name === 'watchlist') _safeRender(renderWatchlistView);
 
   // Restore last analysis results when returning to the analysis view
-  if (name === 'analysis' && state.analysisResult) {
-    renderAnalysisResults(state.analysisResult, null);
+  if (name === 'analysis') {
+    if (state.analysisResult) renderAnalysisResults(state.analysisResult, null);
+    renderFullPortfolioAnalysis();
   }
 }
 
@@ -848,7 +849,6 @@ function renderPortfolioView() {
     </td></tr>`;
     // Still render charts with empty/snapshot data
     _renderPortfolioCharts();
-    renderFullPortfolioAnalysis();
     return;
   }
 
@@ -884,7 +884,6 @@ function renderPortfolioView() {
 
   _renderPortfolioCharts();
   _renderRebalancing(state.portfolio, state.settings?.currency || 'EUR');
-  renderFullPortfolioAnalysis();
 }
 
 function _renderRebalancing(portfolio, currency) {
@@ -1069,8 +1068,8 @@ async function runFullPortfolioAnalysis() {
   const positions = loadPortfolio();
   if (positions.length === 0) { showToast('Add positions to your portfolio first', 'error'); return; }
 
-  const btn = document.getElementById('pFullAnalysisBtn');
-  const statusEl = document.getElementById('pFullAnalysisStatus');
+  const btn = document.getElementById('aFullPortfolioBtn');
+  const statusEl = document.getElementById('aFullPortfolioStatus');
   if (btn) btn.disabled = true;
 
   let done = 0;
@@ -1113,18 +1112,18 @@ async function runFullPortfolioAnalysis() {
 }
 
 function renderFullPortfolioAnalysis() {
-  const card = document.getElementById('pFullAnalysisCard');
-  const body = document.getElementById('pFullAnalysisBody');
+  const card = document.getElementById('aFullPortfolioCard');
+  const body = document.getElementById('aFullPortfolioBody');
   if (!card || !body) return;
 
   const analysis = state.fullPortfolioAnalysis;
-  const currentSymbols = new Set(state.portfolio.map(p => p.symbol));
+  const currentSymbols = new Set(loadPortfolio().map(p => p.symbol));
   const rows = (analysis?.rows || []).filter(r => currentSymbols.has(r.symbol));
 
   if (rows.length === 0) { card.style.display = 'none'; return; }
 
   card.style.display = 'block';
-  const timeEl = document.getElementById('pFullAnalysisTime');
+  const timeEl = document.getElementById('aFullPortfolioTime');
   if (timeEl) timeEl.textContent = analysis.generatedAt ? `Generated ${timeAgo(analysis.generatedAt)}` : '';
 
   body.innerHTML = rows.map(row => {
