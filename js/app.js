@@ -30,6 +30,17 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// Escapes a string for safe embedding inside a single-quoted string literal
+// within an inline onclick="..." HTML attribute. The browser HTML-decodes
+// attribute values before the JS parser reads them, so escapeHtml() alone
+// (which only neutralises HTML metacharacters) is not sufficient there — a
+// decoded &#39; still becomes a literal ' that can close the string early.
+// This escapes backslash/quote for JS-string safety first, then HTML-escapes
+// the result so it survives the attribute round-trip intact.
+function escapeJsAttr(str) {
+  return escapeHtml(String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
 // ── Signal agreement: % of indicators pointing in signal's direction ─
 function signalAgreement(ind, signal) {
   const i = ind.rsiBuy.length - 1;
@@ -57,6 +68,7 @@ const state = {
   portfolioCache: {},     // symbol → { data, ind, net, result }
   portfolioSort: { col: null, dir: 'asc' },
   fullPortfolioAnalysis: null,   // { rows, generatedAt } from runFullPortfolioAnalysis()
+  analysisBusy: false,    // true while runAnalysis() or runFullPortfolioAnalysis() is in flight
 };
 
 // ── Init ─────────────────────────────────────────────────────────
@@ -124,7 +136,7 @@ function initNav() {
   });
 }
 
-function switchView(name) {
+function switchView(name, { skipAnalysisRestore = false } = {}) {
   state.currentView = name;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById(`view-${name}`)?.classList.add('active');
@@ -146,7 +158,7 @@ function switchView(name) {
   if (name === 'watchlist') _safeRender(renderWatchlistView);
 
   // Restore last analysis results when returning to the analysis view
-  if (name === 'analysis') {
+  if (name === 'analysis' && !skipAnalysisRestore) {
     if (state.analysisResult) renderAnalysisResults(state.analysisResult, null);
     renderFullPortfolioAnalysis();
   }
@@ -366,8 +378,10 @@ async function computeFullAnalysis(symbol, { months = 6, buyDate = null, riskLvl
 
   // ── Optimise ──
   const buyDayIdx = buyDate ? (data.dates.findIndex(d => d >= buyDate) ?? -1) : -1;
-  const slPct = suggestStopLoss(data.close, ind.atr, riskLvl) / 100;
-  const posSzPct = suggestPositionSize(riskLvl) / 100;
+  const slSugg = suggestStopLoss(data.close, ind.atr, riskLvl);
+  const posSugg = suggestPositionSize(riskLvl);
+  const slPct = slSugg / 100;
+  const posSzPct = posSugg / 100;
 
   const { bestWeights, bestSignal, testProfit, splitIdx } = await optimise(data.close, ind, {
     nTrials: 400,
@@ -392,7 +406,7 @@ async function computeFullAnalysis(symbol, { months = 6, buyDate = null, riskLvl
   const signal = currentSignal(bestSignal, lastRSI, riskLvl);
   const funds = await fundsPromise;
 
-  return { data, ind, net: bestSignal, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol, testProfit, splitIdx };
+  return { data, ind, net: bestSignal, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol, testProfit, splitIdx, slSugg, posSugg, buyDate };
 }
 
 async function runAnalysis() {
@@ -414,9 +428,13 @@ async function runAnalysis() {
   }
 
   if (!symbol) { showAlert('aAlert', 'error', 'Please enter a ticker symbol.'); return; }
+  if (state.analysisBusy) { showToast('An analysis is already running — please wait for it to finish.', 'error'); return; }
 
   const btn = document.getElementById('aRunBtn');
+  const fullBtn = document.getElementById('aFullPortfolioBtn');
+  state.analysisBusy = true;
   btn.disabled = true;
+  if (fullBtn) fullBtn.disabled = true;
   hideAlert('aAlert');
   document.getElementById('aResults').style.display = 'none';
   const consensusCard = document.getElementById('aConsensusCard');
@@ -447,11 +465,13 @@ async function runAnalysis() {
     showAlert('aAlert', 'error', err.message || 'Analysis failed.');
   } finally {
     btn.disabled = false;
+    if (fullBtn) fullBtn.disabled = false;
+    state.analysisBusy = false;
   }
 }
 
 function renderAnalysisResults(r, buyDate) {
-  const { data, ind, net, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol, testProfit, splitIdx } = r;
+  const { data, ind, net, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol, testProfit, splitIdx, slSugg, posSugg } = r;
 
   const resEl = document.getElementById('aResults');
   resEl.style.display = 'block';
@@ -510,8 +530,6 @@ function renderAnalysisResults(r, buyDate) {
   document.getElementById('aResPrice').textContent = `${data.currency} ${lastPrice.toFixed(2)}`;
 
   const atrLast = ind.atr.filter(v => v != null).pop();
-  const slSugg = suggestStopLoss(data.close, ind.atr, riskLvl);
-  const posSugg = suggestPositionSize(riskLvl);
   const slEl = document.getElementById('aResStopLoss');
   slEl.textContent = `${slSugg}%  (${(lastPrice * slSugg / 100).toFixed(2)})`;
   slEl.title = 'Suggested stop loss distance based on recent ATR (volatility‑aware).';
@@ -855,6 +873,7 @@ function renderPortfolioView() {
   tbody.innerHTML = sortedPortfolio(state.portfolio).map(p => {
     const { pnl, pnlPct } = positionPnL(p);
     const sym = escapeHtml(p.symbol);
+    const symJs = escapeJsAttr(p.symbol);
     const divYield = p.dividendYield > 0
       ? `<span style="color:${p.dividendYield >= 2 ? 'var(--green)' : 'var(--text2)'};">${p.dividendYield.toFixed(2)}%</span>`
       : '<span class="text-muted">—</span>';
@@ -873,10 +892,10 @@ function renderPortfolioView() {
         <td class="text-xs text-muted">${p.buyDate ? fmtDate(p.buyDate) : (p.addedAt ? timeAgo(p.addedAt) : '—')}</td>
         <td>
           <div class="flex gap-8">
-            <button class="btn btn-ghost btn-xs" onclick="refreshPosition('${sym}')" title="Update price from latest data">↻</button>
-            <button class="btn btn-ghost btn-xs" onclick="editPos('${sym}')" title="Edit position (shares / buy price / date)">✎</button>
-            <button class="btn btn-ghost btn-xs" onclick="analyseFromWatchlist('${sym}')" title="Re-run analysis for this symbol">Analyse</button>
-            <button class="btn btn-danger btn-xs" onclick="removePos('${sym}')" title="Remove position from portfolio">✕ Sell</button>
+            <button class="btn btn-ghost btn-xs" onclick="refreshPosition('${symJs}')" title="Update price from latest data">↻</button>
+            <button class="btn btn-ghost btn-xs" onclick="editPos('${symJs}')" title="Edit position (shares / buy price / date)">✎</button>
+            <button class="btn btn-ghost btn-xs" onclick="analyseFromWatchlist('${symJs}')" title="Re-run analysis for this symbol">Analyse</button>
+            <button class="btn btn-danger btn-xs" onclick="removePos('${symJs}')" title="Remove position from portfolio">✕ Sell</button>
           </div>
         </td>
       </tr>`;
@@ -1069,45 +1088,60 @@ async function refreshPortfolioSignals() {
 async function runFullPortfolioAnalysis() {
   const positions = loadPortfolio();
   if (positions.length === 0) { showToast('Add positions to your portfolio first', 'error'); return; }
+  if (state.analysisBusy) { showToast('An analysis is already running — please wait for it to finish.', 'error'); return; }
 
   const btn = document.getElementById('aFullPortfolioBtn');
+  const runBtn = document.getElementById('aRunBtn');
   const statusEl = document.getElementById('aFullPortfolioStatus');
+  state.analysisBusy = true;
   if (btn) btn.disabled = true;
+  if (runBtn) runBtn.disabled = true;
 
   const total = positions.length;
-  const s = state.settings;
   const rows = [];
 
-  for (let i = 0; i < positions.length; i++) {
-    const p = positions[i];
-    if (statusEl) statusEl.textContent = `Analysing ${p.symbol} (${i + 1}/${total})…`;
-    try {
-      const r = await computeFullAnalysis(p.symbol, {
-        months: s.defaultPeriod,
-        buyDate: p.buyDate || null,
-        riskLvl: (p.riskLevel ?? s.defaultRisk) / 100,
-        tf: p.timeframe || s.defaultTimeframe,
-      });
-      state.portfolioCache[p.symbol] = r;
-      rows.push({ ok: true, symbol: p.symbol, r });
-    } catch (e) {
-      rows.push({ ok: false, symbol: p.symbol, error: e.message });
+  try {
+    for (let i = 0; i < positions.length; i++) {
+      const p = positions[i];
+      if (statusEl) statusEl.textContent = `Analysing ${p.symbol} (${i + 1}/${total})…`;
+      // Read settings fresh each iteration in case the user changes them mid-run.
+      const s = state.settings;
+      try {
+        const r = await computeFullAnalysis(p.symbol, {
+          months: s.defaultPeriod,
+          buyDate: p.buyDate || null,
+          riskLvl: (p.riskLevel ?? s.defaultRisk) / 100,
+          tf: p.timeframe || s.defaultTimeframe,
+        });
+        state.portfolioCache[p.symbol] = r;
+        rows.push({ ok: true, symbol: p.symbol, r });
+      } catch (e) {
+        rows.push({ ok: false, symbol: p.symbol, error: e.message });
+      }
     }
+
+    state.fullPortfolioAnalysis = { rows, generatedAt: Date.now() };
+    renderFullPortfolioAnalysis();
+
+    const failed = rows.filter(r => !r.ok).length;
+    showToast(failed > 0
+      ? `Full analysis complete — ${failed} symbol${failed > 1 ? 's' : ''} failed (see console)`
+      : 'Full portfolio analysis complete',
+      failed > 0 ? 'error' : 'ok'
+    );
+    if (failed > 0) rows.filter(r => !r.ok).forEach(r => console.warn(`[Morfeo] Full analysis failed for ${r.symbol}:`, r.error));
+  } finally {
+    if (btn) btn.disabled = false;
+    if (runBtn) runBtn.disabled = false;
+    if (statusEl) statusEl.textContent = '';
+    state.analysisBusy = false;
   }
-
-  state.fullPortfolioAnalysis = { rows, generatedAt: Date.now() };
-  renderFullPortfolioAnalysis();
-
-  if (btn) btn.disabled = false;
-  if (statusEl) statusEl.textContent = '';
-  const failed = rows.filter(r => !r.ok).length;
-  showToast(failed > 0
-    ? `Full analysis complete — ${failed} symbol${failed > 1 ? 's' : ''} failed (see console)`
-    : 'Full portfolio analysis complete',
-    failed > 0 ? 'error' : 'ok'
-  );
-  if (failed > 0) rows.filter(r => !r.ok).forEach(r => console.warn(`[Morfeo] Full analysis failed for ${r.symbol}:`, r.error));
 }
+
+// Dedupes redundant re-renders (e.g. switchView('analysis') firing on every
+// tab visit) — only actually rebuilds the table when the analysis results
+// or the set of held symbols has changed since the last render.
+let _fullPortfolioRenderCache = null; // { analysisRef, symbolsKey }
 
 function renderFullPortfolioAnalysis() {
   const card = document.getElementById('aFullPortfolioCard');
@@ -1116,6 +1150,15 @@ function renderFullPortfolioAnalysis() {
 
   const analysis = state.fullPortfolioAnalysis;
   const currentSymbols = new Set(loadPortfolio().map(p => p.symbol));
+  const symbolsKey = [...currentSymbols].sort().join(',');
+
+  if (_fullPortfolioRenderCache &&
+      _fullPortfolioRenderCache.analysisRef === analysis &&
+      _fullPortfolioRenderCache.symbolsKey === symbolsKey) {
+    return;
+  }
+  _fullPortfolioRenderCache = { analysisRef: analysis, symbolsKey };
+
   const rows = (analysis?.rows || []).filter(r => currentSymbols.has(r.symbol));
 
   if (rows.length === 0) { card.style.display = 'none'; return; }
@@ -1132,21 +1175,20 @@ function renderFullPortfolioAnalysis() {
       </tr>`;
     }
     const { r } = row;
-    const { result, testProfit, signal } = r;
+    const { result, testProfit, signal, slSugg, posSugg } = r;
     const agreePct = signalAgreement(r.ind, signal);
-    const slSugg = suggestStopLoss(r.data.close, r.ind.atr, r.riskLvl);
-    const posSugg = suggestPositionSize(r.riskLvl);
+    const testClass = testProfit == null ? '' : (testProfit >= 0 ? 'pos' : 'neg');
     return `<tr>
       <td style="font-weight:500;">${escapeHtml(row.symbol)}</td>
       <td><span class="badge ${signalBadgeClass(signal)}" title="${explainSignal(signal)}">${escapeHtml(signal)}</span></td>
       <td class="text-xs">${agreePct}%</td>
       <td class="${result.profitPct >= 0 ? 'pos' : 'neg'}">${fmtPct(result.profitPct)}</td>
-      <td class="${(testProfit ?? 0) >= 0 ? 'pos' : 'neg'}">${testProfit != null ? fmtPct(testProfit) : '—'}</td>
+      <td class="${testClass}">${testProfit != null ? fmtPct(testProfit) : '—'}</td>
       <td class="text-xs">${result.numTrades ? result.winRate + '%' : '—'}</td>
       <td class="text-xs">${result.maxDrawdownPct > 0 ? '-' + result.maxDrawdownPct + '%' : '—'}</td>
       <td class="text-xs">${slSugg}%</td>
       <td class="text-xs">${posSugg}%</td>
-      <td><button class="btn btn-ghost btn-xs" onclick="viewCachedAnalysis('${escapeHtml(row.symbol)}')">View →</button></td>
+      <td><button class="btn btn-ghost btn-xs" onclick="viewCachedAnalysis('${escapeJsAttr(row.symbol)}')">View →</button></td>
     </tr>`;
   }).join('');
 }
@@ -1154,9 +1196,6 @@ function renderFullPortfolioAnalysis() {
 // Jumps to the Analysis view and renders an already-computed full-analysis
 // result instantly, instead of re-running the 400-trial optimisation.
 function viewCachedAnalysis(symbol) {
-  const cached = state.portfolioCache[symbol];
-  if (!cached) { analyseFromWatchlist(symbol); return; }
-
   const pos = loadPortfolio().find(p => p.symbol === symbol);
   const buyDate = pos?.buyDate || null;
 
@@ -1164,8 +1203,18 @@ function viewCachedAnalysis(symbol) {
   const buyDateInput = document.getElementById('aBuyDate');
   if (buyDateInput) buyDateInput.value = buyDate || '';
 
+  const cached = state.portfolioCache[symbol];
+  // The cached backtest bakes in a forced-buy signal at the buy date it was
+  // computed with — if the position's buy date changed since, the cache no
+  // longer matches and must be recomputed rather than shown as-is.
+  if (!cached || cached.buyDate !== buyDate) {
+    switchView('analysis');
+    setTimeout(() => runAnalysis(), 100);
+    return;
+  }
+
   state.analysisResult = cached;
-  switchView('analysis');
+  switchView('analysis', { skipAnalysisRestore: true });
   renderAnalysisResults(cached, buyDate);
 
   const consensusCard = document.getElementById('aConsensusCard');
@@ -1261,6 +1310,7 @@ function renderWatchlistView() {
 
   container.innerHTML = state.watchlist.map(w => {
     const sym = escapeHtml(w.symbol);
+    const symJs = escapeJsAttr(w.symbol);
     return `
     <tr>
       <td><span style="font-weight:500;">${sym}</span></td>
@@ -1270,8 +1320,8 @@ function renderWatchlistView() {
       <td class="text-xs text-muted">${w.lastUpdated ? timeAgo(w.lastUpdated) : '—'}</td>
       <td>
         <div class="flex gap-8">
-          <button class="btn btn-ghost btn-xs" onclick="analyseFromWatchlist('${sym}')">Analyse</button>
-          <button class="btn btn-danger btn-xs" onclick="removeWatch('${sym}')">✕</button>
+          <button class="btn btn-ghost btn-xs" onclick="analyseFromWatchlist('${symJs}')">Analyse</button>
+          <button class="btn btn-danger btn-xs" onclick="removeWatch('${symJs}')">✕</button>
         </div>
       </td>
     </tr>`;
