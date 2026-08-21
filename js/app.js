@@ -56,6 +56,7 @@ const state = {
   settings: null,
   portfolioCache: {},     // symbol → { data, ind, net, result }
   portfolioSort: { col: null, dir: 'asc' },
+  fullPortfolioAnalysis: null,   // { rows, generatedAt } from runFullPortfolioAnalysis()
 };
 
 // ── Init ─────────────────────────────────────────────────────────
@@ -340,6 +341,59 @@ function getActiveTimeframe() {
   return active ? active.dataset.tf : 'swing';
 }
 
+// Runs the full 400-trial optimisation + backtest + fundamentals pipeline for
+// one symbol. Shared by the single-symbol Analysis view and the whole-portfolio
+// batch analysis so both stay in sync. onStep(n), if given, is called as each
+// phase completes (2: data fetched, 3: indicators built, 4: optimised).
+async function computeFullAnalysis(symbol, { months = 6, buyDate = null, riskLvl = 0.5, tf = 'swing', onStep = null } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const startDt = new Date();
+  startDt.setMonth(startDt.getMonth() - months);
+  const period1 = Math.floor(startDt.getTime() / 1000);
+  const interval = timeframeInterval(tf);
+
+  const data = await fetchYahooOHLCV(symbol, period1, now, interval);
+  onStep?.(2);
+
+  // ── Fetch fundamentals in parallel ──
+  const fundsPromise = fetchFundamentals(symbol);
+
+  // ── Indicators ──
+  const config = timeframeConfig(tf);
+  const ind = buildIndicators(data, config);
+  onStep?.(3);
+
+  // ── Optimise ──
+  const buyDayIdx = buyDate ? (data.dates.findIndex(d => d >= buyDate) ?? -1) : -1;
+  const slPct = suggestStopLoss(data.close, ind.atr, riskLvl) / 100;
+  const posSzPct = suggestPositionSize(riskLvl) / 100;
+
+  const { bestWeights, bestSignal, testProfit, splitIdx } = await optimise(data.close, ind, {
+    nTrials: 400,
+    buyDayIdx,
+    riskLevel: riskLvl,
+    backtestOpts: { stopLossPct: slPct, positionSizePct: posSzPct },
+  });
+
+  onStep?.(4);
+
+  // ── Final backtest ──
+  const result = backtest(data.close, bestSignal, {
+    riskLevel: riskLvl,
+    stopLossPct: slPct,
+    takeProfitPct: null,
+    positionSizePct: posSzPct,
+    initialBalance: state.settings.initialBalance,
+  });
+
+  const bah = buyAndHold(data.close, state.settings.initialBalance);
+  const lastRSI = ind.rsi.filter(v => v != null).pop();
+  const signal = currentSignal(bestSignal, lastRSI, riskLvl);
+  const funds = await fundsPromise;
+
+  return { data, ind, net: bestSignal, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol, testProfit, splitIdx };
+}
+
 async function runAnalysis() {
   const symbol = document.getElementById('aSymbol').value.trim().toUpperCase();
   const months = parseInt(document.getElementById('aMonths').value) || 6;
@@ -370,55 +424,14 @@ async function runAnalysis() {
   setStep('aLoading', 1);
 
   try {
-    // ── Fetch data ──
-    const now = Math.floor(Date.now() / 1000);
-    const startDt = new Date();
-    startDt.setMonth(startDt.getMonth() - months);
-    const period1 = Math.floor(startDt.getTime() / 1000);
-    const interval = timeframeInterval(tf);
-
-    const data = await fetchYahooOHLCV(symbol, period1, now, interval);
-    setStep('aLoading', 2);
-
-    // ── Fetch fundamentals in parallel ──
-    const fundsPromise = fetchFundamentals(symbol);
-
-    // ── Indicators ──
-    const config = timeframeConfig(tf);
-    const ind = buildIndicators(data, config);
-    setStep('aLoading', 3);
-
-    // ── Optimise ──
-    const buyDayIdx = buyDate ? (data.dates.findIndex(d => d >= buyDate) ?? -1) : -1;
-    const slPct = suggestStopLoss(data.close, ind.atr, riskLvl) / 100;
-    const posSzPct = suggestPositionSize(riskLvl) / 100;
-
-    const { bestWeights, bestSignal, bestProfit, testProfit, splitIdx } = await optimise(data.close, ind, {
-      nTrials: 400,
-      buyDayIdx,
-      riskLevel: riskLvl,
-      backtestOpts: { stopLossPct: slPct, positionSizePct: posSzPct },
+    const r = await computeFullAnalysis(symbol, {
+      months, buyDate, riskLvl, tf,
+      onStep: n => setStep('aLoading', n),
     });
-
-    setStep('aLoading', 4);
-
-    // ── Final backtest ──
-    const result = backtest(data.close, bestSignal, {
-      riskLevel: riskLvl,
-      stopLossPct: slPct,
-      takeProfitPct: null,
-      positionSizePct: posSzPct,
-      initialBalance: state.settings.initialBalance,
-    });
-
-    const bah = buyAndHold(data.close, state.settings.initialBalance);
-    const lastRSI = ind.rsi.filter(v => v != null).pop();
-    const signal = currentSignal(bestSignal, lastRSI, riskLvl);
-    const funds = await fundsPromise;
 
     // Cache for later portfolio use
-    state.analysisResult = { data, ind, net: bestSignal, result, bah, signal, funds, riskLvl, tf, bestWeights, symbol, testProfit, splitIdx };
-    state.portfolioCache[symbol] = state.analysisResult;
+    state.analysisResult = r;
+    state.portfolioCache[symbol] = r;
 
     setLoadingSteps('aLoading', false);
 
@@ -426,7 +439,7 @@ async function runAnalysis() {
     renderAnalysisResults(state.analysisResult, buyDate);
 
     // ── Multi-timeframe consensus (runs in background, updates card when ready) ──
-    runConsensusAnalysis(data).then(renderConsensusResults);
+    runConsensusAnalysis(r.data).then(renderConsensusResults);
 
   } catch (err) {
     setLoadingSteps('aLoading', false);
@@ -835,6 +848,7 @@ function renderPortfolioView() {
     </td></tr>`;
     // Still render charts with empty/snapshot data
     _renderPortfolioCharts();
+    renderFullPortfolioAnalysis();
     return;
   }
 
@@ -870,6 +884,7 @@ function renderPortfolioView() {
 
   _renderPortfolioCharts();
   _renderRebalancing(state.portfolio, state.settings?.currency || 'EUR');
+  renderFullPortfolioAnalysis();
 }
 
 function _renderRebalancing(portfolio, currency) {
@@ -1044,6 +1059,121 @@ async function refreshPortfolioSignals() {
     : 'Portfolio signals updated',
     failed > 0 ? 'error' : 'ok'
   );
+}
+
+// ── Full Portfolio Analysis ──────────────────────────────────────
+// Runs the same 400-trial optimisation used by the single-symbol Analysis
+// view for every portfolio position, and caches each result so "View" can
+// jump straight to the full breakdown without recomputing.
+async function runFullPortfolioAnalysis() {
+  const positions = loadPortfolio();
+  if (positions.length === 0) { showToast('Add positions to your portfolio first', 'error'); return; }
+
+  const btn = document.getElementById('pFullAnalysisBtn');
+  const statusEl = document.getElementById('pFullAnalysisStatus');
+  if (btn) btn.disabled = true;
+
+  let done = 0;
+  const total = positions.length;
+  const updateStatus = () => { if (statusEl) statusEl.textContent = `Analysing ${done}/${total}…`; };
+  updateStatus();
+
+  const s = state.settings;
+  // Concurrency of 2 — each task is a 400-trial optimisation plus a
+  // fundamentals fetch, heavier than the lighter batch refreshes (which use 3).
+  const rows = await withConcurrency(positions, 2, async p => {
+    try {
+      const r = await computeFullAnalysis(p.symbol, {
+        months: s.defaultPeriod,
+        buyDate: p.buyDate || null,
+        riskLvl: (p.riskLevel ?? s.defaultRisk) / 100,
+        tf: p.timeframe || s.defaultTimeframe,
+      });
+      state.portfolioCache[p.symbol] = r;
+      done++; updateStatus();
+      return { ok: true, symbol: p.symbol, r };
+    } catch (e) {
+      done++; updateStatus();
+      return { ok: false, symbol: p.symbol, error: e.message };
+    }
+  });
+
+  state.fullPortfolioAnalysis = { rows, generatedAt: Date.now() };
+  renderFullPortfolioAnalysis();
+
+  if (btn) btn.disabled = false;
+  if (statusEl) statusEl.textContent = '';
+  const failed = rows.filter(r => !r.ok).length;
+  showToast(failed > 0
+    ? `Full analysis complete — ${failed} symbol${failed > 1 ? 's' : ''} failed (see console)`
+    : 'Full portfolio analysis complete',
+    failed > 0 ? 'error' : 'ok'
+  );
+  if (failed > 0) rows.filter(r => !r.ok).forEach(r => console.warn(`[Morfeo] Full analysis failed for ${r.symbol}:`, r.error));
+}
+
+function renderFullPortfolioAnalysis() {
+  const card = document.getElementById('pFullAnalysisCard');
+  const body = document.getElementById('pFullAnalysisBody');
+  if (!card || !body) return;
+
+  const analysis = state.fullPortfolioAnalysis;
+  const currentSymbols = new Set(state.portfolio.map(p => p.symbol));
+  const rows = (analysis?.rows || []).filter(r => currentSymbols.has(r.symbol));
+
+  if (rows.length === 0) { card.style.display = 'none'; return; }
+
+  card.style.display = 'block';
+  const timeEl = document.getElementById('pFullAnalysisTime');
+  if (timeEl) timeEl.textContent = analysis.generatedAt ? `Generated ${timeAgo(analysis.generatedAt)}` : '';
+
+  body.innerHTML = rows.map(row => {
+    if (!row.ok) {
+      return `<tr>
+        <td style="font-weight:500;">${escapeHtml(row.symbol)}</td>
+        <td colspan="9" class="text-xs text-muted">Analysis failed — ${escapeHtml(row.error || 'unknown error')}</td>
+      </tr>`;
+    }
+    const { r } = row;
+    const { result, testProfit, signal } = r;
+    const agreePct = signalAgreement(r.ind, signal);
+    const slSugg = suggestStopLoss(r.data.close, r.ind.atr, r.riskLvl);
+    const posSugg = suggestPositionSize(r.riskLvl);
+    return `<tr>
+      <td style="font-weight:500;">${escapeHtml(row.symbol)}</td>
+      <td><span class="badge ${signalBadgeClass(signal)}" title="${explainSignal(signal)}">${escapeHtml(signal)}</span></td>
+      <td class="text-xs">${agreePct}%</td>
+      <td class="${result.profitPct >= 0 ? 'pos' : 'neg'}">${fmtPct(result.profitPct)}</td>
+      <td class="${(testProfit ?? 0) >= 0 ? 'pos' : 'neg'}">${testProfit != null ? fmtPct(testProfit) : '—'}</td>
+      <td class="text-xs">${result.numTrades ? result.winRate + '%' : '—'}</td>
+      <td class="text-xs">${result.maxDrawdownPct > 0 ? '-' + result.maxDrawdownPct + '%' : '—'}</td>
+      <td class="text-xs">${slSugg}%</td>
+      <td class="text-xs">${posSugg}%</td>
+      <td><button class="btn btn-ghost btn-xs" onclick="viewCachedAnalysis('${escapeHtml(row.symbol)}')">View →</button></td>
+    </tr>`;
+  }).join('');
+}
+
+// Jumps to the Analysis view and renders an already-computed full-analysis
+// result instantly, instead of re-running the 400-trial optimisation.
+function viewCachedAnalysis(symbol) {
+  const cached = state.portfolioCache[symbol];
+  if (!cached) { analyseFromWatchlist(symbol); return; }
+
+  const pos = loadPortfolio().find(p => p.symbol === symbol);
+  const buyDate = pos?.buyDate || null;
+
+  document.getElementById('aSymbol').value = symbol;
+  const buyDateInput = document.getElementById('aBuyDate');
+  if (buyDateInput) buyDateInput.value = buyDate || '';
+
+  state.analysisResult = cached;
+  switchView('analysis');
+  renderAnalysisResults(cached, buyDate);
+
+  const consensusCard = document.getElementById('aConsensusCard');
+  if (consensusCard) consensusCard.style.display = 'none';
+  runConsensusAnalysis(cached.data).then(renderConsensusResults);
 }
 
 function startAutoSignalRefresh() {
@@ -1251,6 +1381,7 @@ function clearAllData() {
   state.watchlist = [];
   state.settings  = loadSettings();
   state.portfolioCache = {};
+  state.fullPortfolioAnalysis = null;
   // Also wipe Firestore document for this user
   const user = typeof firebase !== 'undefined' ? firebase.auth?.()?.currentUser : null;
   if (user) {
