@@ -12,6 +12,15 @@ const path    = require('path');
 const app  = express();
 const PORT = process.env.PORT || 4000;
 
+// Behind a reverse proxy (nginx, Caddy — see README), req.ip otherwise
+// resolves to the proxy's own address, collapsing every client into one
+// rate-limit bucket. Set TRUST_PROXY to the number of hops (e.g. 1) or
+// any value Express's `trust proxy` setting accepts.
+if (process.env.TRUST_PROXY) {
+  const tp = process.env.TRUST_PROXY;
+  app.set('trust proxy', /^\d+$/.test(tp) ? Number(tp) : tp);
+}
+
 // ── Middleware ────────────────────────────────────────────────────
 app.use(express.json());
 

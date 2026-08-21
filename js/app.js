@@ -629,7 +629,10 @@ async function addPositionManual() {
     if (idx >= 0) {
       const ex = portfolio[idx];
       const totalShares = Math.round((ex.shares + shares) * 1e8) / 1e8;
-      const avgPrice    = Math.round(((ex.shares * ex.buyPrice + shares * buyPrice) / totalShares) * 100) / 100;
+      // Blend in the new position's currency — convert the existing buyPrice first,
+      // since it may have been recorded under a different priceCurrency.
+      const exBuyPriceConverted = convertCurrency(ex.buyPrice, ex.priceCurrency || 'USD', priceCurrency);
+      const avgPrice    = Math.round(((ex.shares * exBuyPriceConverted + shares * buyPrice) / totalShares) * 100) / 100;
       portfolio[idx] = {
         ...ex,
         shares: totalShares,
@@ -670,9 +673,9 @@ async function _warnHighCorrelation(newSymbol) {
   const now = Math.floor(Date.now() / 1000);
   const start = now - 90 * 24 * 3600;
   try {
-    const [newData, ...otherData] = await Promise.all([
+    const [newData, otherData] = await Promise.all([
       fetchYahooOHLCV(newSymbol, start, now, '1d'),
-      ...others.map(p => fetchYahooOHLCV(p.symbol, start, now, '1d').catch(() => null)),
+      withConcurrency(others, 3, p => fetchYahooOHLCV(p.symbol, start, now, '1d').catch(() => null)),
     ]);
     const newReturns = dailyReturns(newData.close);
     const highCorr = others
@@ -898,7 +901,7 @@ function _renderRebalancing(portfolio, currency) {
       const barW = Math.min(100, Math.abs(r.diff) / maxDeviation * 100);
       return `<div style="display:flex; align-items:center; gap:10px; margin-bottom:7px;">
         <span style="width:60px; font-size:12px; font-weight:500;">${escapeHtml(r.symbol)}</span>
-        <div style="flex:1; background:var(--surface2); border-radius:2px; height:6px; position:relative;">
+        <div class="rebal-bar-wrap">
           <div style="position:absolute; ${over ? 'left:50%' : `right:${50}%;`} width:${barW / 2}%; height:100%; background:${over ? 'var(--red)' : 'var(--green)'}; border-radius:2px;"></div>
         </div>
         <span style="width:100px; font-size:11px; color:${over ? 'var(--red)' : 'var(--green)'}; text-align:right;">

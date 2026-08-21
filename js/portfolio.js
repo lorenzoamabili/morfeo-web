@@ -172,6 +172,16 @@ function convertToEur(v, sourceCurrency = 'USD') {
   return (sourceCurrency === 'USD') ? v * _usdEurRate : v;
 }
 
+// Convert a value between two native currencies (via EUR as the pivot).
+// Used when blending raw prices that were fetched in different currencies
+// (e.g. averaging into a position after a data source falls back to USD).
+function convertCurrency(v, fromCurrency, toCurrency) {
+  if (v == null) return null;
+  if (fromCurrency === toCurrency) return v;
+  const eur = convertToEur(v, fromCurrency);
+  return toCurrency === 'USD' ? eur / _usdEurRate : eur;
+}
+
 // sourceCurrency: the native currency of the raw value (e.g. 'USD' for US stocks, 'EUR' for Italian stocks).
 // Conversion is only applied when displayCurrency === 'EUR' and sourceCurrency === 'USD'.
 function fmtCurrency(v, displayCurrency = 'EUR', sourceCurrency = 'USD') {

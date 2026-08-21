@@ -51,6 +51,20 @@ function backtest(close, signal, options = {}) {
     positionSizePct = null,   // fraction of balance per trade (null = all-in)
   } = options;
 
+  // No bars to trade over (e.g. an out-of-sample slice shorter than the split) — neutral result.
+  if (!close.length) {
+    return {
+      profitPct: 0,
+      finalVal: initialBalance,
+      trades: [],
+      numTrades: 0,
+      winRate: 0,
+      avgGainPct: 0,
+      maxDrawdownPct: 0,
+      openPosition: null,
+    };
+  }
+
   // Signal threshold: aggressive acts on anything > 0, conservative needs stronger signal
   const threshold = (1 - riskLevel) * 0.3; // 0 to 0.3 range
 

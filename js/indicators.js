@@ -101,6 +101,21 @@ async function fetchYahooOHLCV(symbol, period1, period2, interval = '1d') {
   return result;
 }
 
+// Looks up a symbol's actual trading currency via Alpha Vantage's symbol
+// search (the TIME_SERIES endpoints don't return it). Falls back to 'USD'
+// — Alpha Vantage's own default assumption — if the lookup fails.
+async function _lookupAlphaVantageCurrency(symbol, apiKey) {
+  try {
+    const url = `https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(apiKey)}`;
+    const r = await fetch(url);
+    if (!r.ok) return 'USD';
+    const raw = await r.json();
+    const matches = raw?.bestMatches || [];
+    const exact = matches.find(m => m['1. symbol'] === symbol) || matches[0];
+    return exact?.['8. currency'] || 'USD';
+  } catch { return 'USD'; }
+}
+
 // ── Alpha Vantage fallback data source ───────────────────────────
 async function _fetchAlphaVantage(symbol, interval, apiKey) {
   try {
@@ -137,11 +152,13 @@ async function _fetchAlphaVantage(symbol, interval, apiKey) {
 
     if (entries.length < 5) return null;
 
+    const currency = await _lookupAlphaVantageCurrency(symbol, apiKey);
+
     // Wrap in Yahoo-format envelope so parseOHLCV can handle it
     return {
       chart: { result: [{
         timestamp: entries.map(e => Math.floor(new Date(e.date + 'T12:00:00Z').getTime() / 1000)),
-        meta: { symbol, currency: 'USD', exchangeName: 'AlphaVantage', longName: symbol },
+        meta: { symbol, currency, exchangeName: 'AlphaVantage', longName: symbol },
         indicators: { quote: [{
           open:   entries.map(e => e.open),
           high:   entries.map(e => e.high),

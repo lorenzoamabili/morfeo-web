@@ -49,7 +49,24 @@ self.addEventListener('fetch', e => {
     return; // let browser handle normally
   }
 
-  // Cache-first for app shell
+  // Network-first for navigations/HTML: netlify.toml sends no-cache on *.html
+  // specifically so redeploys are picked up immediately — a cache-first SW
+  // would silently defeat that. Fall back to the cache when offline.
+  const isHTML = e.request.mode === 'navigate' || e.request.destination === 'document';
+  if (isHTML) {
+    e.respondWith(
+      fetch(e.request).then(resp => {
+        if (resp.ok) {
+          const clone = resp.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
+        }
+        return resp;
+      }).catch(() => caches.match(e.request).then(cached => cached || caches.match('/index.html')))
+    );
+    return;
+  }
+
+  // Cache-first for the rest of the app shell (CSS/JS/images)
   e.respondWith(
     caches.match(e.request).then(cached => {
       if (cached) return cached;
