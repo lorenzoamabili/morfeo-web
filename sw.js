@@ -1,5 +1,5 @@
 // Morfeo service worker — caches app shell for offline use
-const CACHE = 'morfeo-v1';
+const CACHE = 'morfeo-v2';
 const SHELL = [
   '/',
   '/index.html',
